@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Private AI — Local Banking Brain</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <span class="brand-name">Private AI for Banking</span>
+      </div>
+      <div class="brand-subtitle">
+        100% local · file:// · IndexedDB · vanilla JS
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- Left: File / Source Manager -->
+      <section class="panel panel-left">
+        <h2>Data Sources</h2>
+
+        <div class="file-import">
+          <label class="file-label">
+            <span>Select CSV / JSON / XLSX</span>
+            <input type="file" id="file-input" multiple />
+          </label>
+          <button id="btn-import" class="btn-primary">Import</button>
+        </div>
+
+        <div class="sources-list">
+          <h3>Loaded Sources</h3>
+          <ul id="sources-ul"></ul>
+        </div>
+
+        <div class="schema-view">
+          <h3>Schema</h3>
+          <pre id="schema-pre" class="schema-pre"></pre>
+        </div>
+      </section>
+
+      <!-- Right: AI Prompt + Results -->
+      <section class="panel panel-right">
+        <h2>Ask the Private AI</h2>
+
+        <div class="prompt-box">
+          <textarea id="prompt-input" rows="4"
+            placeholder="Example: show me all loans between $400 and $18,000 closed in the last 12 months"></textarea>
+          <button id="btn-run" class="btn-primary">Run Query</button>
+        </div>
+
+        <div class="debug-section">
+          <details open>
+            <summary>Query Plan (debug)</summary>
+            <pre id="plan-pre"></pre>
+          </details>
+        </div>
+
+        <div class="results-section">
+          <h3>Results</h3>
+          <div id="results-container" class="results-container"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- NO type="module" – classic scripts for file:// -->
+  <script src="js/db.js"></script>
+  <script src="js/dataManager.js"></script>
+  <script src="js/nlpEngine.js"></script>
+  <script src="js/conceptMapper.js"></script>
+  <script src="js/queryEngine.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
