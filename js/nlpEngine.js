@@ -1,6 +1,16 @@
 // js/nlpEngine.js
 
-const ACTION_WORDS = ["show", "find", "list"];
+const ACTION_WORDS = ["show", "find", "list", "share", "calculate", "compute", "get"];
+const STATISTICAL_OPERATIONS = [
+  "mean", "average", "avg",
+  "standard deviation", "std dev", "stddev", "std",
+  "median",
+  "min", "minimum",
+  "max", "maximum",
+  "sum",
+  "count",
+  "variance"
+];
 const ENTITY_WORDS = [
   "loan",
   "loans",
@@ -26,6 +36,24 @@ function parsePrompt(prompt) {
   }
 
   const lower = text.toLowerCase();
+
+  // Detect statistical operations
+  let statisticalOp = null;
+  let statisticalField = null;
+  
+  for (const op of STATISTICAL_OPERATIONS) {
+    const opLower = op.toLowerCase();
+    // Look for patterns like "standard deviation of X" or "mean of X" or "share standard deviation of X"
+    const opPattern = new RegExp(`\\b${opLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+of\\s+([^\\s]+(?:\\s+[^\\s]+)*)`, 'i');
+    const match = text.match(opPattern);
+    if (match) {
+      statisticalOp = opLower;
+      // Extract the field name (e.g., "loan rates" -> "rate")
+      const fieldPhrase = match[1].toLowerCase();
+      statisticalField = extractFieldFromPhrase(fieldPhrase);
+      break;
+    }
+  }
 
   const intent =
     ACTION_WORDS.find(w => lower.startsWith(w + " ") || lower.startsWith(w + "s ")) ||
@@ -67,8 +95,34 @@ function parsePrompt(prompt) {
     targetEntities: Array.from(new Set(targetEntities)),
     conditions,
     logicalOp,
+    statisticalOp,
+    statisticalField,
     raw: text
   };
+}
+
+function extractFieldFromPhrase(phrase) {
+  // Extract field name from phrases like "loan rates" -> "rate", "checking balances" -> "balance"
+  const lower = phrase.toLowerCase();
+  
+  // Common field name patterns
+  if (lower.includes("rate") || lower.includes("rates")) return "rate";
+  if (lower.includes("balance") || lower.includes("balances")) return "balance";
+  if (lower.includes("principal")) return "principal";
+  if (lower.includes("amount")) return "amount";
+  if (lower.includes("payment")) return "payment";
+  if (lower.includes("charge") || lower.includes("charges")) return "charge";
+  
+  // If phrase contains "loan" or "checking", try to extract the actual field
+  // "loan rates" -> "rate", "checking balances" -> "balance"
+  const words = lower.split(/\s+/);
+  for (const word of words) {
+    if (word !== "loan" && word !== "loans" && word !== "checking" && word !== "account" && word !== "accounts") {
+      return word;
+    }
+  }
+  
+  return phrase; // Fallback to original phrase
 }
 
 function parseConditionFragment(fragment) {
@@ -79,9 +133,21 @@ function parseConditionFragment(fragment) {
   if (branchMatch) {
     const branchNum = Number(branchMatch[1]);
     conds.push({
-      concept: "branch_number",
+      concept: "branch", // Use actual prompt word, not concept ID
       op: "=",
       value: branchNum,
+      valueType: "number"
+    });
+  }
+
+  // "of type X" or "type X"
+  const typeMatch = fragment.match(/\b(?:of\s+)?type\s+(\d+)/i);
+  if (typeMatch) {
+    const typeValue = Number(typeMatch[1]);
+    conds.push({
+      concept: "type", // Use actual prompt word, not concept ID
+      op: "=",
+      value: typeValue,
       valueType: "number"
     });
   }
@@ -102,7 +168,8 @@ function parseConditionFragment(fragment) {
     });
   }
 
-  const gtMatch = fragment.match(/greater than\s+\$?([\d,\.]+)/i);
+  // "greater than" or "over"
+  const gtMatch = fragment.match(/(?:greater than|over)\s+\$?([\d,\.]+)/i);
   if (gtMatch) {
     const v = Number(gtMatch[1].replace(/,/g, ""));
     conds.push({
@@ -147,15 +214,26 @@ function parseConditionFragment(fragment) {
 }
 
 function guessConcept(fragment) {
-  if (fragment.includes("loan")) return "loan_amount";
-  if (fragment.includes("checking") || fragment.includes("account")) return "checking_balance";
-  if (fragment.includes("deposit")) return "deposit_balance";
-  return "amount";
+  // Return the actual word from the prompt, not a concept ID
+  // The concept mapper will match via semantic groups
+  if (fragment.includes("principal")) return "principal";
+  if (fragment.includes("loan")) return "loan";
+  if (fragment.includes("checking")) return "checking";
+  if (fragment.includes("account")) return "account";
+  if (fragment.includes("deposit")) return "deposit";
+  if (fragment.includes("branch")) return "branch";
+  if (fragment.includes("type")) return "type";
+  if (fragment.includes("class")) return "class";
+  if (fragment.includes("amount")) return "amount";
+  if (fragment.includes("balance")) return "balance";
+  return "amount"; // Default fallback
 }
 
 function guessDateConcept(fragment) {
-  if (fragment.includes("closed")) return "close_date";
-  if (fragment.includes("opened")) return "open_date";
+  // Return the actual word from the prompt
+  if (fragment.includes("closed") || fragment.includes("close")) return "close";
+  if (fragment.includes("opened") || fragment.includes("open")) return "open";
+  if (fragment.includes("maturity")) return "maturity";
   return "date";
 }
 

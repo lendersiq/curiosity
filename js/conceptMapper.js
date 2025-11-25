@@ -1,14 +1,20 @@
 // js/conceptMapper.js
 // Access getSchema from window.DataManager when needed (don't destructure at top level)
 
-const CONCEPT_VOCAB = {
-  loan_amount: ["loan", "amount", "principal", "balance", "origination"],
-  checking_balance: ["checking", "balance", "avg", "average"],
-  deposit_balance: ["deposit", "balance", "avg", "average"],
-  close_date: ["close", "closed", "maturity", "paid", "off"],
-  open_date: ["open", "opened", "origination", "start"],
-  branch_number: ["branch", "branch_number", "branchnumber"]
-};
+// Semantic groups: words in the same array are semantically related
+// If a field name matches one word and a prompt word matches another in the same group, they're associated
+const SEMANTIC_GROUPS = [
+  ["branch", "branch_number", "branchnumber", "location", "office", "branch_id"],
+  ["class", "type", "category", "group", "classification", "class_code", "classcode", "kind"],
+  ["principal", "loan_amount", "amount", "balance", "origination", "loan_balance", "principal_amount"],
+  ["checking", "checking_balance", "checking_account", "checking_amount"],
+  ["deposit", "deposit_balance", "deposit_amount", "deposit_account"],
+  ["rate", "rates", "interest_rate", "interest", "apr", "apy"],
+  ["close", "closed", "maturity", "paid", "off", "close_date", "maturity_date", "paid_off"],
+  ["open", "opened", "origination", "start", "open_date", "date_opened", "origination_date"],
+  ["customer", "customer_id", "member", "member_id", "client", "client_id"],
+  ["portfolio", "portfolio_id", "account", "account_id", "reference", "id"]
+];
 
 function tokenizeFieldName(name) {
   return name
@@ -18,18 +24,74 @@ function tokenizeFieldName(name) {
     .filter(Boolean);
 }
 
-function scoreFieldForConcept(fieldName, concept) {
-  const tokens = tokenizeFieldName(fieldName);
-  const vocab = CONCEPT_VOCAB[concept] || [];
-  if (!vocab.length || !tokens.length) return 0;
-
-  let score = 0;
-  for (const t of tokens) {
-    if (vocab.includes(t)) score += 2;
-    else {
-      if (vocab.some(v => t.includes(v) || v.includes(t))) score += 1;
+// Find which semantic group(s) a word belongs to
+function findSemanticGroups(word) {
+  const normalized = word.toLowerCase();
+  const tokens = tokenizeFieldName(normalized);
+  const matchingGroups = [];
+  
+  for (let i = 0; i < SEMANTIC_GROUPS.length; i++) {
+    const group = SEMANTIC_GROUPS[i];
+    for (const token of tokens) {
+      // Exact match
+      if (group.includes(token)) {
+        matchingGroups.push(i);
+        break;
+      }
+      // Partial match (substring)
+      if (group.some(g => token.includes(g) || g.includes(token))) {
+        matchingGroups.push(i);
+        break;
+      }
     }
   }
+  
+  return matchingGroups;
+}
+
+// Score how well a field name matches a concept word from the prompt
+// Returns score > 0 if they share a semantic group, 0 otherwise
+function scoreFieldForConcept(fieldName, conceptWord) {
+  const fieldTokens = tokenizeFieldName(fieldName);
+  const conceptTokens = tokenizeFieldName(conceptWord);
+  
+  if (!fieldTokens.length || !conceptTokens.length) return 0;
+  
+  // Find semantic groups for field name tokens
+  const fieldGroups = new Set();
+  for (const token of fieldTokens) {
+    findSemanticGroups(token).forEach(g => fieldGroups.add(g));
+  }
+  
+  // Find semantic groups for concept word tokens
+  const conceptGroups = new Set();
+  for (const token of conceptTokens) {
+    findSemanticGroups(token).forEach(g => conceptGroups.add(g));
+  }
+  
+  // If they share any semantic group, they're related
+  const sharedGroups = [...fieldGroups].filter(g => conceptGroups.has(g));
+  if (sharedGroups.length === 0) return 0;
+  
+  // Calculate score based on how well they match
+  let score = 0;
+  for (const token of fieldTokens) {
+    for (const conceptToken of conceptTokens) {
+      // Exact match in same group
+      const tokenGroups = findSemanticGroups(token);
+      const conceptTokenGroups = findSemanticGroups(conceptToken);
+      if (tokenGroups.some(g => conceptTokenGroups.includes(g))) {
+        if (token === conceptToken) {
+          score += 3; // Exact match
+        } else {
+          score += 2; // Same semantic group
+        }
+      } else if (token.includes(conceptToken) || conceptToken.includes(token)) {
+        score += 1; // Partial substring match
+      }
+    }
+  }
+  
   return score;
 }
 
@@ -54,7 +116,22 @@ async function mapConceptsToFields(sourceId, conditions) {
       }
     }
 
-    if (!bestField) return cond;
+    // If no field found, try using concept name as fallback (for debugging)
+    // But prefer to return original condition if no match
+    if (!bestField || bestScore <= 0) {
+      // Try direct field name match as last resort
+      const directMatch = schema.fields.find(f => 
+        f.name.toLowerCase() === cond.concept.toLowerCase() ||
+        f.id.toLowerCase() === cond.concept.toLowerCase()
+      );
+      if (directMatch) {
+        return {
+          ...cond,
+          field: directMatch.id
+        };
+      }
+      return cond;
+    }
 
     return {
       ...cond,

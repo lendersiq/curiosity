@@ -99,6 +99,71 @@
         const result = await window.QueryEngine.executeQueryPlan(planCopy, sourcesMeta);
         currentRows = result.rows;
         
+        // Handle statistical operations
+        if (planCopy.statisticalOp && planCopy.statisticalField) {
+          // Find the actual field name using concept mapper
+          let statisticalFieldName = planCopy.statisticalField;
+          
+          if (result.usedSources && result.usedSources.length > 0) {
+            const source = result.usedSources[0];
+            const schema = await window.DataManager.getSchema(source.sourceId);
+            if (schema && schema.fields) {
+              // Try to map the statistical field using concept mapper
+              const tempCondition = {
+                concept: planCopy.statisticalField,
+                valueType: "number"
+              };
+              const mapped = await window.ConceptMapper.mapConceptsToFields(
+                source.sourceId,
+                [tempCondition]
+              );
+              if (mapped[0] && mapped[0].field) {
+                statisticalFieldName = mapped[0].field;
+              } else {
+                // Try direct field name match
+                const directMatch = schema.fields.find(f => 
+                  f.name.toLowerCase().includes(planCopy.statisticalField.toLowerCase()) ||
+                  f.id.toLowerCase().includes(planCopy.statisticalField.toLowerCase())
+                );
+                if (directMatch) {
+                  statisticalFieldName = directMatch.id;
+                }
+              }
+            }
+          }
+          
+          // Apply statistical operation
+          const statResult = window.Statistical.applyStatisticalOperation(
+            result.rows,
+            statisticalFieldName,
+            planCopy.statisticalOp
+          );
+          
+          if (statResult != null) {
+            const formatted = window.Statistical.formatStatisticalResult(
+              planCopy.statisticalOp,
+              statResult,
+              statisticalFieldName
+            );
+            
+            // Display statistical result
+            resultsContainer.innerHTML = `
+              <div class="statistical-result">
+                <h3>Statistical Result</h3>
+                <div class="stat-value">
+                  <span class="stat-operation">${formatted.operation}</span>
+                  <span class="stat-field">of ${formatted.field}</span>
+                  <span class="stat-number">${formatted.value}</span>
+                </div>
+                <div class="stat-meta">
+                  Based on ${result.rows.length} row${result.rows.length !== 1 ? 's' : ''}
+                </div>
+              </div>
+            `;
+            return;
+          }
+        }
+        
         // Keep expanded state for rows that still exist
         const newExpanded = new Set();
         expandedRows.forEach(idx => {
