@@ -467,6 +467,54 @@ body {
   white-space: nowrap;
 }
 
+.statistical-result {
+  padding: 24px;
+  background: rgba(83, 191, 250, 0.1);
+  border: 2px solid rgba(83, 191, 250, 0.3);
+  border-radius: 12px;
+  margin: 16px 0;
+}
+
+.statistical-result h3 {
+  margin: 0 0 16px 0;
+  color: #53bffa;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.stat-operation {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #e5edf7;
+}
+
+.stat-field {
+  font-size: 1rem;
+  color: rgba(229, 237, 247, 0.7);
+  font-style: italic;
+}
+
+.stat-number {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #53bffa;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-meta {
+  font-size: 0.9rem;
+  color: rgba(229, 237, 247, 0.6);
+  margin-top: 8px;
+}
+
 .results-empty {
   font-size: 0.8rem;
   opacity: 0.7;
