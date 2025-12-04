@@ -136,33 +136,40 @@ async function importFiles(fileList) {
 
     imported.push({ sourceId, fields, name: file.name });
 
-    // Save rows in separate transaction
+    // Save rows in batches to avoid transaction timeout
+    // IndexedDB transactions can timeout if they take too long
+    // We'll process in batches of 1000 rows per transaction
     const rowsStoreName = `rows_${sourceId}`;
-    const txRows = db.transaction(rowsStoreName, "readwrite");
-    const rowsStore = txRows.objectStore(rowsStoreName);
-    await new Promise((resolve, reject) => {
-      let index = 0;
-      function addNext() {
-        if (index >= parsed.rows.length) {
-          txRows.oncomplete = () => resolve();
-          txRows.onerror = () => reject(txRows.error);
-          return;
-        }
-        const req = rowsStore.add(parsed.rows[index]);
-        index++;
-        req.onsuccess = () => {
-          // continue
-          if (index % 500 === 0) {
-            // let event loop breathe
-            setTimeout(addNext, 0);
-          } else {
-            addNext();
+    const batchSize = 1000;
+    const totalRows = parsed.rows.length;
+    
+    for (let startIndex = 0; startIndex < totalRows; startIndex += batchSize) {
+      const endIndex = Math.min(startIndex + batchSize, totalRows);
+      const batch = parsed.rows.slice(startIndex, endIndex);
+      
+      // Create a fresh transaction for each batch
+      const db = await window.DB.getDB();
+      const txRows = db.transaction(rowsStoreName, "readwrite");
+      const rowsStore = txRows.objectStore(rowsStoreName);
+      
+      await new Promise((resolve, reject) => {
+        let index = 0;
+        function addNext() {
+          if (index >= batch.length) {
+            txRows.oncomplete = () => resolve();
+            txRows.onerror = () => reject(txRows.error);
+            return;
           }
-        };
-        req.onerror = () => reject(req.error);
-      }
-      addNext();
-    });
+          const req = rowsStore.add(batch[index]);
+          index++;
+          req.onsuccess = () => {
+            addNext();
+          };
+          req.onerror = () => reject(req.error);
+        }
+        addNext();
+      });
+    }
   }
 
   return imported;
@@ -291,38 +298,51 @@ async function updateSource(sourceId, file) {
   
   // Clear and update rows in separate transaction
   const rowsStoreName = `rows_${sourceId}`;
-  const txRows = db.transaction(rowsStoreName, "readwrite");
-  const rowsStore = txRows.objectStore(rowsStoreName);
   
-  // Clear existing rows
+  // Clear existing rows in a single transaction
+  const db = await window.DB.getDB();
+  const txClear = db.transaction(rowsStoreName, "readwrite");
+  const clearStore = txClear.objectStore(rowsStoreName);
   await new Promise((resolve, reject) => {
-    const req = rowsStore.clear();
+    const req = clearStore.clear();
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
+    txClear.oncomplete = () => resolve();
+    txClear.onerror = () => reject(txClear.error);
   });
   
-  // Add new rows
-  await new Promise((resolve, reject) => {
-    let index = 0;
-    function addNext() {
-      if (index >= parsed.rows.length) {
-        txRows.oncomplete = () => resolve();
-        txRows.onerror = () => reject(txRows.error);
-        return;
-      }
-      const req = rowsStore.add(parsed.rows[index]);
-      index++;
-      req.onsuccess = () => {
-        if (index % 500 === 0) {
-          setTimeout(addNext, 0);
-        } else {
-          addNext();
+  // Add new rows in batches to avoid transaction timeout
+  // IndexedDB transactions can timeout if they take too long
+  const batchSize = 1000;
+  const totalRows = parsed.rows.length;
+  
+  for (let startIndex = 0; startIndex < totalRows; startIndex += batchSize) {
+    const endIndex = Math.min(startIndex + batchSize, totalRows);
+    const batch = parsed.rows.slice(startIndex, endIndex);
+    
+    // Create a fresh transaction for each batch
+    const db = await window.DB.getDB();
+    const txRows = db.transaction(rowsStoreName, "readwrite");
+    const rowsStore = txRows.objectStore(rowsStoreName);
+    
+    await new Promise((resolve, reject) => {
+      let index = 0;
+      function addNext() {
+        if (index >= batch.length) {
+          txRows.oncomplete = () => resolve();
+          txRows.onerror = () => reject(txRows.error);
+          return;
         }
-      };
-      req.onerror = () => reject(req.error);
-    }
-    addNext();
-  });
+        const req = rowsStore.add(batch[index]);
+        index++;
+        req.onsuccess = () => {
+          addNext();
+        };
+        req.onerror = () => reject(req.error);
+      }
+      addNext();
+    });
+  }
   
   return { sourceId, fields, name: file.name };
 }
@@ -335,7 +355,9 @@ function detectEntityTypes(source) {
   if (name.includes("loan") || fileName.includes("loan")) {
     entities.push("loans");
   }
-  if (name.includes("checking") || fileName.includes("checking")) {
+  // DDA = Demand Deposit Account = checking account
+  if (name.includes("checking") || fileName.includes("checking") || 
+      name.includes("dda") || fileName.includes("dda")) {
     entities.push("checking");
   }
   if (name.includes("deposit") || fileName.includes("deposit")) {
