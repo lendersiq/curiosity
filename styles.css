@@ -53,6 +53,13 @@ body {
   font-size: 0.8rem;
 }
 
+.brand img {
+  width: 1.1rem;
+  height: 1.1rem;
+  object-fit: contain;
+  display: block;
+}
+
 .brand-subtitle {
   font-size: 0.8rem;
   opacity: 0.7;
