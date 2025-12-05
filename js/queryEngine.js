@@ -340,9 +340,11 @@ function pickSourceForEntity(entity, sourcesMeta) {
   if (!sourcesMeta || !sourcesMeta.length) return null;
   const lowerEntity = (entity || "").toLowerCase();
 
-  const preferred = sourcesMeta.find(s =>
-    s.name.toLowerCase().includes(lowerEntity.replace(/s$/, ""))
-  );
+  // Use detectEntityTypes to properly match entities based on both name and filename
+  const preferred = sourcesMeta.find(s => {
+    const entities = window.DataManager.detectEntityTypes(s);
+    return entities.some(e => e.toLowerCase() === lowerEntity);
+  });
   
   // Return null if no match found (don't fall back to first source)
   return preferred || null;
