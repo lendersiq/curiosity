@@ -99,6 +99,92 @@
         const result = await window.QueryEngine.executeQueryPlan(planCopy, sourcesMeta);
         currentRows = result.rows;
         
+        // Ensure grouping by uniqueID if we have multiple sources or need grouping
+        // This should already be handled by executeQueryPlan, but let's verify
+        if (result.rows.length > 0 && !result.uniqueId) {
+          result.uniqueId = planCopy.uniqueId || await window.QueryEngine.findUniqueIdentifierField(result.usedSources || []);
+        }
+        
+        // Handle function calls (e.g., "average balance of loans")
+        if (planCopy.functionCall && result.rows.length > 0 && result.usedSources && result.usedSources.length > 0) {
+          const source = result.usedSources[0];
+          const library = window.FunctionLibrary[planCopy.functionCall.library];
+          if (library && library.functions[planCopy.functionCall.functionName]) {
+            const functionInfo = library.functions[planCopy.functionCall.functionName];
+            
+            // Get uniqueID from result or query plan
+            const uniqueId = result.uniqueId || planCopy.uniqueId || await window.QueryEngine.findUniqueIdentifierField(result.usedSources || []);
+            
+            // Map function parameters to field names
+            const fieldMapping = await window.FunctionRegistry.mapFunctionParameters(
+              source.sourceId,
+              functionInfo
+            );
+            
+            // Get parameter names for column headers
+            const paramNames = window.FunctionRegistry.getFunctionParameters(functionInfo);
+            const resultColumnName = planCopy.functionCall.functionName.replace(/([A-Z])/g, ' $1').trim();
+            
+            // Build column list: uniqueID first, then function parameters, then result column
+            const functionColumns = [];
+            if (uniqueId) {
+              functionColumns.push(uniqueId);
+            }
+            for (const param of paramNames) {
+              const fieldName = fieldMapping[param];
+              if (fieldName) {
+                functionColumns.push(fieldName);
+              }
+            }
+            functionColumns.push(resultColumnName);
+            
+            // Execute function on each row and add result as new column
+            // Handle both regular rows and aggregated rows with sub-rows
+            const enrichedRows = [];
+            for (const row of result.rows) {
+              const enrichedRow = { ...row };
+              
+              // Execute function on main row
+              const funcResult = window.FunctionRegistry.executeFunctionOnRow(
+                row,
+                functionInfo,
+                fieldMapping
+              );
+              
+              if (funcResult != null) {
+                enrichedRow[resultColumnName] = funcResult;
+              }
+              
+              // If row has sub-rows (aggregated), apply function to sub-rows too
+              if (row._subRows && row._subRows.length > 0) {
+                enrichedRow._subRows = row._subRows.map(subRow => {
+                  const enrichedSubRow = { ...subRow };
+                  const subFuncResult = window.FunctionRegistry.executeFunctionOnRow(
+                    subRow,
+                    functionInfo,
+                    fieldMapping
+                  );
+                  if (subFuncResult != null) {
+                    enrichedSubRow[resultColumnName] = subFuncResult;
+                  }
+                  return enrichedSubRow;
+                });
+              }
+              
+              enrichedRows.push(enrichedRow);
+            }
+            
+            // Update result rows and render as table
+            result.rows = enrichedRows;
+            result.uniqueId = uniqueId;
+            planCopy.columns = functionColumns;
+            planCopy.uniqueId = uniqueId;
+            planCopy.valuationFields = [resultColumnName];
+            
+            // Continue to normal rendering with enriched rows
+          }
+        }
+        
         // Handle statistical operations
         if (planCopy.statisticalOp && planCopy.statisticalField) {
           // Find the actual field name using concept mapper
@@ -337,6 +423,19 @@
       const keys = Object.keys(rows[0]);
       columns = keys.filter(k => !k.startsWith('_'));
     }
+    
+    // Ensure uniqueID is first column if it exists
+    const uniqueIdField = queryPlan?.uniqueId;
+    if (uniqueIdField) {
+      if (columns.includes(uniqueIdField)) {
+        // Move uniqueID to first position
+        columns = columns.filter(c => c !== uniqueIdField);
+        columns.unshift(uniqueIdField);
+      } else {
+        // Add uniqueID as first column if it's not already there
+        columns.unshift(uniqueIdField);
+      }
+    }
 
     // Create table wrapper for sticky header
     const tableWrapper = document.createElement("div");
@@ -361,7 +460,8 @@
     // Get valuation fields from query plan or detect from columns
     const valuationFields = queryPlan?.valuationFields || 
       columns.filter(c => /principal|balance|amount|value/i.test(c));
-    const uniqueId = queryPlan?.uniqueId || columns[0];
+    // Use uniqueIdField from above, or fallback to first column
+    const uniqueIdForGrouping = uniqueIdField || columns[0];
 
     rows.forEach((row, rowIndex) => {
       const isAggregated = row._isAggregated;

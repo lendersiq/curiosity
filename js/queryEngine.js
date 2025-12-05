@@ -38,7 +38,23 @@ function buildNumericPredicate(cond) {
 }
 
 function buildDatePredicate(cond) {
-  if (!cond.field || !cond.relativeTime) return () => false;
+  if (!cond.field) return () => false;
+
+  if (cond.absoluteDate) {
+    const boundary = new Date(cond.absoluteDate);
+    if (isNaN(boundary.getTime())) return () => false;
+
+    return row => {
+      const d = new Date(row[cond.field]);
+      if (isNaN(d.getTime())) return false;
+      if (cond.op === "after") return d >= boundary;
+      if (cond.op === "before") return d <= boundary;
+      return false;
+    };
+  }
+
+  if (!cond.relativeTime) return () => false;
+
   const now = new Date();
   const boundary = new Date(now);
 

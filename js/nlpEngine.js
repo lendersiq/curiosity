@@ -55,6 +55,51 @@ function parsePrompt(prompt) {
     }
   }
 
+  // Detect function calls (e.g., "average balance", "average principal")
+  let functionCall = null;
+  if (window.FunctionRegistry) {
+    // Search for function keywords in the prompt
+    const functionKeywords = [
+      'average balance',
+      'average principal', 
+      'mean balance',
+      'mean principal',
+      'average loan balance',
+      'average loan principal'
+    ];
+    
+    for (const keyword of functionKeywords) {
+      if (lower.includes(keyword)) {
+        const found = window.FunctionRegistry.findFunctionByDescription(keyword);
+        if (found) {
+          functionCall = {
+            library: found.library,
+            functionName: found.functionName,
+            description: found.function.description
+          };
+          break;
+        }
+      }
+    }
+    
+    // Also try searching by individual words if no match found
+    if (!functionCall) {
+      const words = lower.split(/\s+/);
+      for (let i = 0; i < words.length - 1; i++) {
+        const phrase = words[i] + ' ' + words[i + 1];
+        const found = window.FunctionRegistry.findFunctionByDescription(phrase);
+        if (found) {
+          functionCall = {
+            library: found.library,
+            functionName: found.functionName,
+            description: found.function.description
+          };
+          break;
+        }
+      }
+    }
+  }
+
   const intent =
     ACTION_WORDS.find(w => lower.startsWith(w + " ") || lower.startsWith(w + "s ")) ||
     (lower.startsWith("customers with") ? "show" : "show");
@@ -68,9 +113,10 @@ function parsePrompt(prompt) {
     .filter(Boolean);
 
   const conditions = parts.flatMap(part => parseConditionFragment(part));
+  const dateConditions = extractDateConditions(text);
   
   // Check if "branch" appears in conditions (e.g., "in branch 4")
-  const hasBranchCondition = conditions.some(c => c.concept === "branch_number");
+  const hasBranchCondition = [...conditions, ...dateConditions].some(c => c.concept === "branch");
   const branchInCondition = /\b(?:in|at)\s+branch\s+(\d+)/i.test(text);
 
   // Extract target entities, but exclude "branch"/"branches" if they're in a condition
@@ -93,10 +139,11 @@ function parsePrompt(prompt) {
   return {
     intent,
     targetEntities: Array.from(new Set(targetEntities)),
-    conditions,
+    conditions: [...conditions, ...dateConditions],
     logicalOp,
     statisticalOp,
     statisticalField,
+    functionCall,
     raw: text
   };
 }
@@ -123,6 +170,51 @@ function extractFieldFromPhrase(phrase) {
   }
   
   return phrase; // Fallback to original phrase
+}
+
+function parseDateString(text) {
+  if (!text) return null;
+  const cleaned = text.trim().replace(/,/g, " ").replace(/\s+/g, " ");
+
+  // Try native Date parsing first
+  const native = new Date(cleaned);
+  if (!isNaN(native.getTime())) return native;
+
+  const numericMatch = cleaned.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (numericMatch) {
+    const month = Number(numericMatch[1]);
+    const day = Number(numericMatch[2]);
+    let year = Number(numericMatch[3]);
+    if (year < 100) year += 2000;
+    const date = new Date(year, month - 1, day);
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  const isoMatch = cleaned.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})$/);
+  if (isoMatch) {
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    const day = Number(isoMatch[3]);
+    const date = new Date(year, month - 1, day);
+    if (!isNaN(date.getTime())) return date;
+  }
+
+  const monthNameMatch = cleaned.match(
+    /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/i
+  );
+  if (monthNameMatch) {
+    const monthName = monthNameMatch[1].toLowerCase();
+    const day = Number(monthNameMatch[2]);
+    const year = Number(monthNameMatch[3]);
+    const monthNames = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+    const month = monthNames.findIndex(m => monthName.startsWith(m));
+    if (month >= 0) {
+      const date = new Date(year, month, day);
+      if (!isNaN(date.getTime())) return date;
+    }
+  }
+
+  return null;
 }
 
 function parseConditionFragment(fragment) {
@@ -207,6 +299,44 @@ function parseConditionFragment(fragment) {
         value
       },
       valueType: "date"
+    });
+  }
+
+  return conds;
+}
+
+function extractDateConditions(text) {
+  const conds = [];
+  if (!text) return conds;
+
+  const regex = /\b(?:(opened|open|closed|close|matured|maturity)\s+)?(before|after)\s+([0-9a-zA-Z\/\-\.,\s]+?)(?=\s+(?:and|or)\b|$)/gi;
+  let lastField = null;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    let fieldWord = match[1] ? match[1].toLowerCase() : lastField;
+    if (!fieldWord) continue;
+
+    // Update last field reference when explicit field provided
+    if (match[1]) {
+      lastField = fieldWord;
+    }
+
+    const opWord = match[2].toLowerCase();
+    const dateText = match[3].trim();
+    const parsedDate = parseDateString(dateText);
+    if (!parsedDate) continue;
+
+    const concept =
+      fieldWord.includes("open") ? "open" :
+      fieldWord.includes("close") ? "close" :
+      "maturity";
+
+    conds.push({
+      concept,
+      op: opWord === "before" ? "before" : "after",
+      valueType: "date",
+      absoluteDate: parsedDate.toISOString()
     });
   }
 
