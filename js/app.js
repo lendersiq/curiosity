@@ -17,7 +17,7 @@
     const planPre = document.getElementById("plan-pre");
     const resultsContainer = document.getElementById("results-container");
 
-    sourcesMeta = await listSources();
+    sourcesMeta = await window.DataManager.listSources();
     renderSourcesList();
 
     btnImport.addEventListener("click", async () => {

@@ -300,7 +300,6 @@ async function updateSource(sourceId, file) {
   const rowsStoreName = `rows_${sourceId}`;
   
   // Clear existing rows in a single transaction
-  const db = await window.DB.getDB();
   const txClear = db.transaction(rowsStoreName, "readwrite");
   const clearStore = txClear.objectStore(rowsStoreName);
   await new Promise((resolve, reject) => {
@@ -321,7 +320,6 @@ async function updateSource(sourceId, file) {
     const batch = parsed.rows.slice(startIndex, endIndex);
     
     // Create a fresh transaction for each batch
-    const db = await window.DB.getDB();
     const txRows = db.transaction(rowsStoreName, "readwrite");
     const rowsStore = txRows.objectStore(rowsStoreName);
     
