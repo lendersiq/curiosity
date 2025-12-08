@@ -1,4 +1,4 @@
-Portfolio,Open_Date,Branch_Number,Class_Code,Owner_Code,Statement_Rate,Average_Balance,PMTD_Interest_Earned,PMTD_Checks,PMTD_Service_Charge,PMTD_Service_Charge_Waived,PMTD_Other_Charges,PMTD_Other_Charges_Waived,PMTD_Number_of_Deposits,PMTD_Number_of_Items_NSF
+Portfolio,Open_Date,Branch,Class_Code,Owner_Code,Statement_Rate,Average_Balance,PMTD_Interest_Earned,PMTD_Checks,PMTD_Service_Charge,PMTD_Service_Charge_Waived,PMTD_Other_Charges,PMTD_Other_Charges_Waived,PMTD_Number_of_Deposits,PMTD_Number_of_Items_NSF
 2071880,2025-03-17,19,4,54,0.000125,300.00,11.44,71,10,6,2,0,5,2
 2071880,2024-12-01,6,4,54,0.00025,400.00,3.8,83,11,9,15,0,2,2
 2056874,2004-10-10,17,8,168,0.0005,233847.58,2.29,60,13,6,39,0,9,0
