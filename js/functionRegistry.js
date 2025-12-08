@@ -6,22 +6,38 @@
  */
 function findFunctionByDescription(searchText) {
   if (!window.FunctionLibrary) return null;
-  
+
   const lower = searchText.toLowerCase();
   const keywords = lower.split(/\s+/);
-  
+
+  // Common stop words to exclude
+  const stopWords = new Set([
+    'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+    'an', 'a', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has',
+    'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+    'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it',
+    'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'its',
+    'our', 'their', 'what', 'which', 'who', 'when', 'where', 'why', 'how'
+  ]);
+
+  // Filter out stop words and short words
+  const meaningfulKeywords = keywords.filter(keyword =>
+    keyword.length >= 3 && !stopWords.has(keyword)
+  );
+
+  if (meaningfulKeywords.length === 0) return null;
+
   // Search through all libraries
   for (const libName in window.FunctionLibrary) {
     const library = window.FunctionLibrary[libName];
     if (!library || !library.functions) continue;
-    
+
     for (const funcName in library.functions) {
       const func = library.functions[funcName];
       const descLower = func.description.toLowerCase();
-      
-      // Check if any keyword matches the description
-      for (const keyword of keywords) {
-        if (keyword.length < 3) continue; // Skip short words
+
+      // Check if any meaningful keyword matches the description
+      for (const keyword of meaningfulKeywords) {
         if (descLower.includes(keyword)) {
           return {
             library: libName,
@@ -32,7 +48,7 @@ function findFunctionByDescription(searchText) {
       }
     }
   }
-  
+
   return null;
 }
 
@@ -152,4 +168,3 @@ window.FunctionRegistry = {
   mapFunctionParameters,
   executeFunctionOnRow
 };
-

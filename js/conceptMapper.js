@@ -16,12 +16,30 @@ const SEMANTIC_GROUPS = [
   ["portfolio", "portfolio_id", "account", "account_id", "reference", "id"]
 ];
 
+// Noun adjunct patterns: common banking nouns that often appear with identifiers
+const NOUN_ADJUNCT_PATTERNS = [
+  "number", "id", "code", "key", "reference", "identifier"
+];
+
 function tokenizeFieldName(name) {
   return name
     .replace(/[_\-]/g, " ")
     .split(/\s+/)
     .map(t => t.toLowerCase())
     .filter(Boolean);
+}
+
+// Extract base noun from noun adjunct patterns (e.g., "branch number" -> "branch")
+function extractBaseNoun(concept) {
+  const tokens = tokenizeFieldName(concept);
+
+  // Check if the last token is a noun adjunct
+  if (tokens.length > 1 && NOUN_ADJUNCT_PATTERNS.includes(tokens[tokens.length - 1])) {
+    // Return all tokens except the last one (the noun adjunct)
+    return tokens.slice(0, -1).join(" ");
+  }
+
+  return concept;
 }
 
 // Find which semantic group(s) a word belongs to
@@ -102,6 +120,28 @@ async function mapConceptsToFields(sourceId, conditions) {
   return conditions.map(cond => {
     if (!cond.concept) return cond;
 
+    console.log(`Mapping concept "${cond.concept}" for source, ${schema.fields.length} fields available`);
+
+    // Intelligent noun adjunct recognition
+    const baseNoun = extractBaseNoun(cond.concept);
+    console.log(`Base noun extracted: "${baseNoun}" from "${cond.concept}"`);
+
+    // First priority: exact match for base noun (handles noun adjunct patterns)
+    const exactBaseNounField = schema.fields.find(f =>
+      f.name.toLowerCase() === baseNoun.toLowerCase() &&
+      (cond.valueType !== "number" || f.dataType === "number") &&
+      (cond.valueType !== "date" || f.dataType === "date")
+    );
+
+    if (exactBaseNounField) {
+      console.log(`Using exact base noun match for "${cond.concept}": ${exactBaseNounField.name}`);
+      return {
+        ...cond,
+        field: exactBaseNounField.id
+      };
+    }
+
+    // Second priority: semantic scoring for the full concept
     let bestField = null;
     let bestScore = -1;
 
@@ -110,9 +150,12 @@ async function mapConceptsToFields(sourceId, conditions) {
       if (cond.valueType === "date" && f.dataType !== "date") continue;
 
       const s = scoreFieldForConcept(f.name, cond.concept);
+      console.log(`Field "${f.name}" (${f.dataType}) score for "${cond.concept}": ${s}`);
+
       if (s > bestScore) {
         bestScore = s;
         bestField = f;
+        console.log(`New best field: "${f.name}" with score ${s}`);
       }
     }
 
@@ -120,7 +163,7 @@ async function mapConceptsToFields(sourceId, conditions) {
     // But prefer to return original condition if no match
     if (!bestField || bestScore <= 0) {
       // Try direct field name match as last resort
-      const directMatch = schema.fields.find(f => 
+      const directMatch = schema.fields.find(f =>
         f.name.toLowerCase() === cond.concept.toLowerCase() ||
         f.id.toLowerCase() === cond.concept.toLowerCase()
       );
@@ -133,10 +176,13 @@ async function mapConceptsToFields(sourceId, conditions) {
       return cond;
     }
 
-    return {
+    console.log(`Best match for "${cond.concept}": ${bestField.name} (score: ${bestScore})`);
+    const result = {
       ...cond,
       field: bestField.id
     };
+    console.log(`Final mapping result:`, result);
+    return result;
   });
 }
 

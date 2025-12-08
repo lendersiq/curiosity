@@ -1,6 +1,9 @@
 // js/queryEngine.js
 // Access getDB from window.DB when needed (don't destructure at top level)
 
+// Valid entity types for query validation
+const VALID_ENTITIES = ["loans", "checking", "customers", "deposits", "branches", "certificates", "savings", "credit cards", "mortgages", "indirect"];
+
 function buildNumericPredicate(cond) {
   if (!cond.field) return () => false;
 
@@ -95,6 +98,13 @@ async function executeQueryFromSource(queryPlan, source, conditions) {
   const predicates = conditions.map(buildPredicate);
   const logic = queryPlan.logicalOp || "AND";
 
+  // If any condition failed to map to a field, exclude all rows from this source
+  const hasUnmappedConditions = conditions.some(c => !c.field);
+  if (hasUnmappedConditions) {
+    console.log(`Source ${source.name}: has unmapped conditions, excluding all rows`);
+    return [];
+  }
+
   const resultRows = [];
 
   await new Promise((resolve, reject) => {
@@ -178,7 +188,18 @@ async function executeMultiSourceQuery(queryPlan, sourcesMeta) {
   const targetEntities = queryPlan.targetEntities || [];
   const uniqueId = queryPlan.uniqueId || await findUniqueIdentifierField(sourcesMeta);
   const columns = queryPlan.columns || [];
-  const valuationFields = await identifyValuationFields(sourcesMeta);
+  // For multi-entity queries, collect valuation fields from each matched source
+  const matchedSources = targetEntities.length
+    ? sourcesMeta.filter(s => targetEntities.includes((window.DataManager.detectEntityTypes(s)[0] || '').toLowerCase()) || targetEntities.includes((s.name || '').toLowerCase()) )
+    : sourcesMeta;
+
+  // Get valuation field for each source individually, then combine
+  const allValuationFields = new Set();
+  for (const source of matchedSources) {
+    const sourceValuationFields = await identifyValuationFields([source]);
+    sourceValuationFields.forEach(field => allValuationFields.add(field));
+  }
+  const valuationFields = Array.from(allValuationFields);
 
   // Find sources for each entity
   const sourcesToQuery = [];
@@ -212,12 +233,12 @@ async function executeMultiSourceQuery(queryPlan, sourcesMeta) {
   }
 
   // Combine results
-  const combined = combineMultiSourceResults(sourceResults, uniqueId, columns, valuationFields);
+  const combined = await combineMultiSourceResults(sourceResults, uniqueId, columns, valuationFields, queryPlan);
 
   return { rows: combined, usedSources: sourcesToQuery, uniqueId, columns, valuationFields };
 }
 
-function combineMultiSourceResults(sourceResults, uniqueId, columns, valuationFields) {
+async function combineMultiSourceResults(sourceResults, uniqueId, columns, valuationFields, queryPlan) {
   const grouped = new Map();
 
   // Group by unique ID
@@ -312,28 +333,46 @@ async function findUniqueIdentifierField(sourcesMeta) {
 }
 
 async function identifyValuationFields(sourcesMeta) {
-  const valuationPatterns = ["Principal", "Average_Balance", "Balance", "Amount", "Value"];
-  const found = new Set();
+  // Smart scoring: evaluate all fields and pick the highest-scoring valuation field
+  // based on banking valuation terminology.
+  const heuristics = [
+    { pattern: /principal/i, score: 5 },
+    { pattern: /outstanding/i, score: 3 },
+    { pattern: /average|avg/i, score: 3 },
+    { pattern: /balance/i, score: 5 },
+    { pattern: /amount/i, score: 2 },
+    { pattern: /value/i, score: 1 },
+  ];
 
-  // Check schemas for valuation fields
+  let best = { score: 0, fieldId: null };
+
   for (const source of sourcesMeta) {
     const schema = await window.DataManager.getSchema(source.sourceId);
     if (!schema || !schema.fields) continue;
 
     for (const field of schema.fields) {
-      const lowerName = field.name.toLowerCase();
-      if (valuationPatterns.some(p => lowerName.includes(p.toLowerCase()))) {
-        found.add(field.id);
+      const name = (field.name || "").toLowerCase();
+      const id = (field.id || "").toLowerCase();
+      let score = 0;
+
+      heuristics.forEach(h => {
+        if (h.pattern.test(name) || h.pattern.test(id)) {
+          score += h.score;
+          // Small bonus for exact word match
+          if (name === h.pattern.source.replace(/\\|\/|i/g, '').toLowerCase() ||
+              id === h.pattern.source.replace(/\\|\/|i/g, '').toLowerCase()) {
+            score += 1;
+          }
+        }
+      });
+
+      if (score > best.score) {
+        best = { score, fieldId: field.id };
       }
     }
   }
 
-  // Add common patterns if not found
-  if (found.size === 0) {
-    valuationPatterns.forEach(p => found.add(p));
-  }
-
-  return Array.from(found);
+  return best.fieldId ? [best.fieldId] : [];
 }
 
 function pickSourceForEntity(entity, sourcesMeta) {
@@ -350,11 +389,177 @@ function pickSourceForEntity(entity, sourcesMeta) {
   return preferred || null;
 }
 
+/**
+ * Validate a query plan before execution
+ */
+async function validateQueryPlan(plan, sourcesMeta = null) {
+  const issues = [];
+  let isValid = true;
+  let confidence = 1.0;
+
+  // Check for required fields
+  if (!plan.intent) {
+    issues.push("Missing intent");
+    isValid = false;
+    confidence = 0.0;
+  }
+
+  // Check target entities
+  if (!plan.targetEntities || plan.targetEntities.length === 0) {
+    issues.push("No target entities specified");
+    isValid = false;
+    confidence = 0.0;
+  } else {
+    // Ensure targetEntities are strings (convert if needed)
+    const stringEntities = plan.targetEntities.map(entity =>
+      typeof entity === 'string' ? entity : (entity.entity || String(entity))
+    );
+
+    // Validate entities exist in our data sources
+    const invalidEntities = stringEntities.filter(entity => !VALID_ENTITIES.includes(entity));
+    if (invalidEntities.length > 0) {
+      issues.push(`Unknown entities: ${invalidEntities.join(", ")}`);
+      isValid = false;
+      confidence = Math.min(confidence, 0.3);
+    }
+
+    // If we have sourcesMeta, validate that sources exist for entities
+    if (sourcesMeta && isValid) {
+      for (const entity of stringEntities) {
+        const source = pickSourceForEntity(entity, sourcesMeta);
+        if (!source) {
+          issues.push(`No data source found for entity: ${entity}`);
+          isValid = false;
+          confidence = Math.min(confidence, 0.5);
+        }
+      }
+    }
+
+    // Update plan with string entities for consistency
+    plan.targetEntities = stringEntities;
+  }
+
+  // Check statistical operations
+  if (plan.statisticalOp) {
+    const validStats = ["mean", "average", "min", "max", "count", "sum", "standard deviation", "variance", "median"];
+    if (!validStats.some(stat => plan.statisticalOp.toLowerCase().includes(stat))) {
+      issues.push(`Unknown statistical operation: ${plan.statisticalOp}`);
+      isValid = false;
+      confidence = Math.min(confidence, 0.7);
+    }
+
+    if (!plan.statisticalField) {
+      issues.push("Statistical operation specified but no field provided");
+      isValid = false;
+      confidence = Math.min(confidence, 0.7);
+    }
+  }
+
+  // Check conditions with field validation if sourcesMeta available
+  if (plan.conditions) {
+    for (const condition of plan.conditions) {
+      if (!condition.concept) {
+        issues.push("Condition missing concept");
+        isValid = false;
+        confidence = Math.min(confidence, 0.8);
+      }
+      if (!condition.op) {
+        issues.push("Condition missing operator");
+        isValid = false;
+        confidence = Math.min(confidence, 0.8);
+      }
+      if (condition.valueType && !["number", "date", "string"].includes(condition.valueType)) {
+        issues.push(`Invalid condition value type: ${condition.valueType}`);
+        isValid = false;
+        confidence = Math.min(confidence, 0.8);
+      }
+
+      // Validate field existence if sourcesMeta is available
+      if (sourcesMeta && condition.concept && plan.targetEntities) {
+        let fieldFound = false;
+        for (const entity of plan.targetEntities) {
+          const source = pickSourceForEntity(entity, sourcesMeta);
+          if (source) {
+            // Try to map the condition to actual fields
+            try {
+              const mappedConditions = await window.ConceptMapper.mapConceptsToFields(
+                source.sourceId,
+                [condition]
+              );
+              if (mappedConditions && mappedConditions.length > 0 && mappedConditions[0].field) {
+                fieldFound = true;
+                break;
+              }
+            } catch (err) {
+              // Ignore mapping errors during validation
+            }
+          }
+        }
+        if (!fieldFound) {
+          issues.push(`Condition field "${condition.concept}" not found in data sources`);
+          confidence = Math.min(confidence, 0.6);
+        }
+      }
+    }
+  }
+
+  // Check for conflicting operations
+  if (plan.statisticalOp && plan.functionCall) {
+    issues.push("Cannot specify both statistical operation and function call");
+    isValid = false;
+    confidence = Math.min(confidence, 0.7);
+  }
+
+  // Reduce confidence if we have sourcesMeta but couldn't validate fields
+  if (sourcesMeta && confidence > 0.8) {
+    confidence = 0.8; // Leave some room for execution-time issues
+  }
+
+  return {
+    isValid,
+    issues,
+    confidence
+  };
+}
+
+/**
+ * Calculate overall confidence in the query plan
+ */
+function calculatePlanConfidence(plan) {
+  let confidence = 1.0;
+
+  // Reduce confidence for missing entities
+  if (!plan.targetEntities || plan.targetEntities.length === 0) {
+    confidence *= 0.3;
+  }
+
+  // Reduce confidence for unknown entities
+  if (plan.targetEntities) {
+    const invalidCount = plan.targetEntities.filter(entity => !VALID_ENTITIES.includes(entity)).length;
+    if (invalidCount > 0) {
+      confidence *= Math.max(0.2, 1 - (invalidCount * 0.3));
+    }
+  }
+
+  // Reduce confidence for complex conditions
+  if (plan.conditions && plan.conditions.length > 3) {
+    confidence *= 0.8;
+  }
+
+  // Reduce confidence for multi-entity queries
+  if (plan.targetEntities && plan.targetEntities.length > 2) {
+    confidence *= 0.7;
+  }
+
+  return Math.max(0.1, confidence);
+}
+
 // expose globally
 window.QueryEngine = {
   executeQueryPlan,
   pickSourceForEntity,
   findUniqueIdentifierField,
   identifyValuationFields,
-  combineMultiSourceResults
+  combineMultiSourceResults,
+  validateQueryPlan
 };
