@@ -14,7 +14,7 @@
         <span class="brand-name">Trwth</span>
       </div>
       <div class="brand-subtitle">
-        Private AI v1.12.7
+        Private AI v1.12.10
       </div>
     </header>
 
@@ -25,12 +25,17 @@
 
         <div class="file-import">
           <label class="file-label">
-            <span>Select CSV / JSON / XLSX</span>
+            <span>📁 Select CSV / JSON / XLSX Files</span>
             <input type="file" id="file-input" multiple accept=".csv,.json,.xlsx,.xls" />
           </label>
         </div>
 
         <div id="file-status" class="file-status" style="display: none;"></div>
+
+        <div id="loading-spinner" class="loading-spinner" style="display: none;">
+          <div class="spinner"></div>
+          <span id="spinner-text">Processing files...</span>
+        </div>
 
         <div class="selected-files" id="selected-files" style="display: none;">
           <h4>Selected Files</h4>

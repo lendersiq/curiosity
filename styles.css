@@ -14,7 +14,7 @@ body {
 
 body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  background: radial-gradient(circle at top left, #1e2a3b, #050810 60%);
+  background: radial-gradient(circle at top left, #343f4e, #050810 60%);
   color: #e5edf7;
 }
 
@@ -956,4 +956,91 @@ body {
     flex-direction: column;
     gap: 4px;
   }
+}
+
+/* Table Summary Bar */
+.table-summary-bar {
+  background: linear-gradient(135deg, rgba(7, 16, 30, 0.95) 0%, rgba(22, 33, 62, 0.95) 100%);
+  border: 1px solid rgba(83, 191, 250, 0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  backdrop-filter: blur(8px);
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.summary-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+}
+
+.summary-value {
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.summary-value.mode {
+  background: rgba(76, 175, 80, 0.8);
+  color: white;
+}
+
+.summary-value.sum {
+  background: rgba(33, 150, 243, 0.8);
+  color: white;
+}
+
+.summary-value.mean {
+  background: rgba(255, 152, 0, 0.8);
+  color: white;
+}
+
+.summary-value.percentage {
+  background: rgba(156, 39, 176, 0.8); /* purple highlight for percentages */
+  color: white;
+}
+
+/* Loading Spinner */
+.loading-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  margin: 12px 0;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #f3f3f3;
+  border-top: 2px solid #2E8BC0;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+#spinner-text {
+  color: #666;
+  font-size: 14px;
+  font-weight: 500;
 }
