@@ -53,6 +53,32 @@ function max(values) {
 }
 
 /**
+ * Calculate mode (most frequent value)
+ */
+function mode(values) {
+  const nums = values.filter(v => v != null && !isNaN(v)).map(v => Number(v));
+  if (nums.length === 0) return null;
+
+  const frequency = {};
+  nums.forEach(n => {
+    const key = n; // Use number as key
+    frequency[key] = (frequency[key] || 0) + 1;
+  });
+
+  let mode = null;
+  let maxCount = 0;
+  for (const [value, count] of Object.entries(frequency)) {
+    if (count > maxCount) {
+      mode = Number(value);
+      maxCount = count;
+    }
+  }
+
+  // If all values are equally frequent, return the first one
+  return mode;
+}
+
+/**
  * Calculate sum
  */
 function sum(values) {
@@ -174,6 +200,7 @@ window.Statistical = {
   sum,
   count,
   variance,
+  mode,
   extractFieldValues,
   applyStatisticalOperation,
   formatStatisticalResult

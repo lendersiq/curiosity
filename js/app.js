@@ -1,5 +1,5 @@
 // js/app.js
-(function () {
+(function() {
   // Access window objects when needed (don't destructure at top level)
   let sourcesMeta = [];
   let expandedRows = new Set();
@@ -9,7 +9,346 @@
   // Prompt log for tracking user queries and their performance
   let promptLog = [];
 
+  // Global function to render sources list
+  function renderSourcesList() {
+    const sourcesUl = document.getElementById('sources-ul');
+    if (!sourcesUl) return; // Safety check
+
+    sourcesUl.innerHTML = "";
+    sourcesMeta.forEach(src => {
+      const li = document.createElement("li");
+      li.setAttribute("data-source-id", src.sourceId);
+      li.className = "source-item";
+
+      // Detect entity types
+      const entities = window.DataManager.detectEntityTypes(src);
+
+      // Create entity tags
+      const entityTags = entities.map(entity => {
+        const tag = document.createElement("span");
+        tag.className = `entity-tag entity-tag-${entity}`;
+        tag.textContent = entity;
+        return tag.outerHTML;
+      }).join("");
+
+      li.innerHTML = `
+        <div class="source-item-header">
+          <div class="source-item-info">
+            <span class="source-name">${src.name}</span>
+            <div class="source-entities">${entityTags}</div>
+          </div>
+          <div class="source-item-actions">
+            <button class="btn-icon btn-update" title="Update source with new file (select file again to refresh schema)" data-action="update" data-source-id="${src.sourceId}">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M11.5 2.5C10.5 1.5 9.1 1 7.5 1C4.2 1 1.5 3.7 1.5 7C1.5 10.3 4.2 13 7.5 13C10.3 13 12.7 10.9 13.2 8.2"/>
+                <path d="M11.5 2.5L13.5 1L11.5 4.5"/>
+              </svg>
+            </button>
+            <button class="btn-icon btn-delete" title="Remove source" data-action="delete" data-source-id="${src.sourceId}">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M3 3L11 11M11 3L3 11"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      `;
+      sourcesUl.appendChild(li);
+    });
+
+    if (!sourcesMeta.length) {
+      sourcesUl.innerHTML = `<li><small>No sources loaded yet.</small></li>`;
+    }
+
+    // Add event listeners for update/delete buttons
+    sourcesUl.querySelectorAll('.btn-icon').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const action = btn.getAttribute('data-action');
+        const sourceId = btn.getAttribute('data-source-id');
+
+        if (action === 'delete') {
+          if (confirm('Are you sure you want to remove this source?')) {
+            // Remove from DOM immediately
+            const sourceItem = btn.closest('li[data-source-id]');
+            if (sourceItem) {
+              sourceItem.style.opacity = '0.5';
+              sourceItem.style.transition = 'opacity 0.2s';
+              setTimeout(() => {
+                sourceItem.remove();
+              }, 200);
+            }
+
+            // Update sourcesMeta immediately
+            sourcesMeta = sourcesMeta.filter(s => s.sourceId !== sourceId);
+
+            // Clear schema display if deleted source was selected
+            const schemaPre = document.getElementById("schema-pre");
+            if (schemaPre) schemaPre.textContent = "";
+
+            // Perform async deletion in background
+            window.DataManager.deleteSource(sourceId).catch(err => {
+              console.error('Error removing source from database:', err);
+              // Re-render list if deletion failed
+              window.DataManager.listSources().then(updated => {
+                sourcesMeta = updated;
+                renderSourcesList();
+              });
+            });
+          }
+        } else if (action === 'update') {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = '.csv,.json';
+          input.style.display = 'none';
+          document.body.appendChild(input);
+
+          input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+              document.body.removeChild(input);
+              return;
+            }
+
+            const updateBtn = btn;
+            try {
+              updateBtn.disabled = true;
+              updateBtn.style.opacity = '0.5';
+              updateBtn.style.cursor = 'wait';
+              showSpinner('Updating source...');
+              await window.DataManager.updateSource(sourceId, file);
+              sourcesMeta = await window.DataManager.listSources();
+              renderSourcesList();
+              hideSpinner();
+            } catch (err) {
+              console.error(err);
+              hideSpinner();
+              alert('Error updating source: ' + err.message);
+            } finally {
+              updateBtn.disabled = false;
+              updateBtn.style.opacity = '1';
+              updateBtn.style.cursor = 'pointer';
+              document.body.removeChild(input);
+            }
+          };
+
+          // Use setTimeout to ensure the input is properly added to DOM before clicking
+          setTimeout(() => {
+            input.click();
+          }, 0);
+        }
+      });
+    });
+  }
+
   const SUPPORTED_FILE_TYPES = new Set(["csv", "json", "xlsx"]);
+
+
+  // Spinner management functions
+  function showSpinner(text = "Processing...") {
+    const spinner = document.getElementById('loading-spinner');
+    const spinnerText = document.getElementById('spinner-text');
+    if (spinner && spinnerText) {
+      spinnerText.textContent = text;
+      spinner.style.display = 'flex';
+    }
+  }
+
+  function hideSpinner() {
+    const spinner = document.getElementById('loading-spinner');
+    if (spinner) {
+      spinner.style.display = 'none';
+    }
+  }
+
+  // Table summarization functions
+  async function generateColumnSummaries(columns, rows, queryPlan, usedSources) {
+    const summaries = {};
+
+    for (const columnName of columns) {
+      // Extract values for this column
+      const values = rows.map(row => row[columnName]).filter(v => v != null);
+
+      // Get column metadata (dataType and roleGuess)
+      const columnMeta = await getColumnMetadata(columnName, queryPlan, usedSources);
+
+      if (!columnMeta) {
+        summaries[columnName] = null;
+        continue;
+      }
+
+      const { dataType, roleGuess } = columnMeta;
+
+      // Rule 1: candidateId fields get no summary
+      if (roleGuess === 'candidateId') {
+        summaries[columnName] = null;
+        continue;
+      }
+
+      // Rule 2: Integer columns show MODE
+      if (dataType === 'integer') {
+        summaries[columnName] = {
+          value: window.Statistical.mode(values),
+          type: 'mode',
+          label: 'Most Common'
+        };
+        continue;
+      }
+
+      // Rule 3: Currency columns show SUM
+      if (dataType === 'currency') {
+        summaries[columnName] = {
+          value: window.Statistical.sum(values),
+          type: 'sum',
+          label: 'Total'
+        };
+        continue;
+      }
+
+      // Rule 4: Percentage columns show MEAN (average %)
+      if (dataType === 'percentage') {
+        const percentValues = values
+          .map(v => {
+            const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+            return Number.isNaN(n) ? null : n;
+          })
+          .filter(v => v !== null);
+
+        // Determine maximum decimal precision present in the raw values
+        const maxPrecision = values.reduce((max, v) => {
+          const parts = String(v).split('.');
+          const decimals = parts[1] ? parts[1].replace(/[^0-9]/g, '') : '';
+          return Math.max(max, decimals.length);
+        }, 0);
+
+        summaries[columnName] = percentValues.length
+          ? {
+              value: window.Statistical.mean(percentValues),
+              type: 'percentage',
+              label: 'Average %',
+              precision: maxPrecision > 0 ? maxPrecision : 2
+            }
+          : null;
+        continue;
+      }
+
+      // Rule 5: Other numeric columns show MEAN
+      if (dataType === 'number') {
+        summaries[columnName] = {
+          value: window.Statistical.mean(values),
+          type: 'mean',
+          label: 'Average'
+        };
+        continue;
+      }
+
+      // No summary for non-numeric columns
+      summaries[columnName] = null;
+    }
+
+    return summaries;
+  }
+
+  async function getColumnMetadata(columnName, queryPlan, usedSources) {
+    // Try to find column metadata from actual schemas
+    if (usedSources && usedSources.length > 0) {
+      for (const source of usedSources) {
+        try {
+          const schema = await window.DataManager.getSchema(source.sourceId);
+          if (schema && schema.fields) {
+            const field = schema.fields.find(f => f.name === columnName || f.id === columnName);
+            if (field && field.dataType) {
+              return {
+                dataType: field.dataType,
+                roleGuess: field.roleGuess
+              };
+            }
+          }
+        } catch (error) {
+          console.warn('Error getting schema for source:', source.sourceId, error);
+        }
+      }
+    }
+
+    // Enhanced fallback: detect from column name patterns
+    const lowerName = columnName.toLowerCase();
+
+    // Direct name matches
+    if (lowerName === 'portfolio') {
+      return { dataType: 'integer', roleGuess: 'candidateId' };
+    }
+    if (lowerName.includes('principal') || lowerName.includes('balance') ||
+        lowerName.includes('amount') || lowerName.includes('payment') ||
+        lowerName.includes('charge')) {
+      return { dataType: 'currency', roleGuess: 'field' };
+    }
+    if (lowerName.includes('branch') || lowerName.includes('class') ||
+        lowerName.includes('owner') || lowerName.includes('month') ||
+        lowerName.includes('count') || lowerName === 'rowid') {
+      return { dataType: 'integer', roleGuess: 'field' };
+    }
+    if (lowerName.includes('rate') || lowerName.includes('risk') || lowerName.includes('percent')) {
+      return { dataType: 'percentage', roleGuess: 'field' };
+    }
+    if (lowerName.includes('date')) {
+      return { dataType: 'date', roleGuess: 'field' };
+    }
+
+    return { dataType: 'string', roleGuess: 'field' };
+  }
+
+  function createSummaryBar(summaries) {
+    const summaryBar = document.createElement('div');
+    summaryBar.className = 'table-summary-bar';
+
+    // Only show columns that have summaries
+    const summaryItems = Object.entries(summaries)
+      .filter(([_, summary]) => summary !== null)
+      .map(([columnName, summary]) => {
+        const item = document.createElement('div');
+        item.className = 'summary-item';
+
+        const label = document.createElement('span');
+        label.className = 'summary-label';
+        label.textContent = `${columnName} ${summary.label}:`;
+
+        const value = document.createElement('span');
+        value.className = `summary-value ${summary.type}`;
+      value.textContent = formatSummaryValue(summary.value, summary.type, summary.precision);
+
+        item.appendChild(label);
+        item.appendChild(value);
+        return item;
+      });
+
+    if (summaryItems.length === 0) {
+      return null; // No summaries to show
+    }
+
+    summaryItems.forEach(item => summaryBar.appendChild(item));
+    return summaryBar;
+  }
+
+  function formatSummaryValue(value, type, precision) {
+    if (value === null || value === undefined) return 'N/A';
+
+    if (typeof value === 'number') {
+      if (type === 'percentage') {
+        const p = Number.isFinite(precision) ? precision : 2;
+        return `${value.toFixed(p)}%`;
+      }
+      if (Number.isInteger(value)) {
+        return value.toLocaleString();
+      } else {
+        // Format as currency if it looks like money
+        if (value > 1000) {
+          return '$' + value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+    }
+
+    return String(value);
+  }
 
   // Prompt log management functions
   function categorizePrompt(validation, executionSuccess, confidence) {
@@ -162,25 +501,34 @@
   }
 
   function handleFileSelection(event) {
-    console.log('File selection event triggered');
-    console.log('Files selected:', event.target.files);
+    console.log('📁 File selection triggered');
     const files = Array.from(event.target.files);
-    console.log('Files array:', files);
+    console.log('📋 Files selected:', files.length, 'files');
     displaySelectedFiles(files);
   }
 
   function displaySelectedFiles(files) {
-    console.log('displaySelectedFiles called with', files.length, 'files');
+    console.log('📝 displaySelectedFiles called with', files.length, 'files');
+    console.log('📦 selectedFilesDiv element:', selectedFilesDiv);
+    console.log('📋 selectedFilesList element:', selectedFilesList);
+
     if (files.length === 0) {
-      console.log('No files, hiding selected files div');
+      console.log('❌ No files, hiding selected files div');
       if (selectedFilesDiv) selectedFilesDiv.style.display = 'none';
       updateFileStatus('No files selected.', 'warn');
       return;
     }
 
-    console.log('Showing selected files div');
+    console.log('✅ Showing selected files div');
     if (selectedFilesDiv) selectedFilesDiv.style.display = 'block';
     if (selectedFilesList) selectedFilesList.innerHTML = '';
+
+    // Ensure import button is enabled (listener set in main)
+    const currentBtnImport = document.getElementById("btn-import");
+    if (currentBtnImport) {
+      currentBtnImport.disabled = false;
+      currentBtnImport.style.opacity = '1';
+    }
 
     const unsupportedNames = [];
 
@@ -272,9 +620,21 @@
   }
 
   async function main() {
+    console.log('🎯 MAIN FUNCTION STARTED');
     console.log('DataManager available:', typeof window.DataManager);
     console.log('DataManager.importFiles:', typeof window.DataManager?.importFiles);
+
+    console.log('🔄 Initializing DB...');
+    console.log('window.DB:', window.DB);
+    console.log('window.DB.initDB:', window.DB?.initDB);
     await window.DB.initDB();
+    console.log('✅ DB initialized');
+
+    console.log('🔍 Getting DOM elements...');
+
+
+    // Wait a bit more for DOM to be fully ready
+    await new Promise(resolve => setTimeout(resolve, 10));
 
     const fileInput = document.getElementById("file-input");
     const btnImport = document.getElementById("btn-import");
@@ -282,11 +642,116 @@
     selectedFilesDiv = document.getElementById("selected-files");
     selectedFilesList = document.getElementById("selected-files-list");
 
-    console.log('Element references:');
-    console.log('fileInput:', fileInput);
-    console.log('selectedFilesDiv:', selectedFilesDiv);
-    console.log('selectedFilesList:', selectedFilesList);
-    console.log('fileStatusEl:', fileStatusEl);
+    console.log('🔍 Element references:');
+    console.log('fileInput:', fileInput ? 'FOUND' : 'NOT FOUND', fileInput);
+    console.log('btnImport:', btnImport ? 'FOUND' : 'NOT FOUND', btnImport);
+    console.log('selectedFilesDiv:', selectedFilesDiv ? 'FOUND' : 'NOT FOUND', selectedFilesDiv);
+    console.log('selectedFilesList:', selectedFilesList ? 'FOUND' : 'NOT FOUND', selectedFilesList);
+    console.log('fileStatusEl:', fileStatusEl ? 'FOUND' : 'NOT FOUND', fileStatusEl);
+
+    // Set up import button listener FIRST to prevent duplicates
+    console.log('🎧 Setting up import button event listener...');
+    console.log('🎧 IMPORT BUTTON SETUP: btnImport =', btnImport);
+    console.log('🎧 IMPORT BUTTON SETUP: btnImport exists?', !!btnImport);
+    // Ensure we don't carry over stale attributes from previous runs
+    if (btnImport) btnImport.removeAttribute('data-listener-attached');
+    if (btnImport && !btnImport.hasAttribute('data-listener-attached')) {
+      console.log('✅ IMPORT BUTTON SETUP: Attaching click listener');
+      btnImport.addEventListener("click", async () => {
+        console.log('🔄 IMPORT BUTTON: Clicked!');
+        try {
+        const files = fileInput.files;
+        console.log('📁 Files to import:', files);
+        console.log('📊 Number of files:', files.length);
+
+        if (!files || files.length === 0) {
+          alert('Please select files first');
+          return;
+        }
+
+        if (!files || !files.length) {
+          alert("Select at least one file first.");
+          return;
+        }
+
+        // Filter supported files
+        const supportedFiles = Array.from(files).filter(file => {
+          const ext = file.name.split('.').pop()?.toLowerCase();
+          return ['csv', 'json', 'xlsx', 'xls'].includes(ext);
+        });
+
+        const unsupportedFiles = Array.from(files).filter(file => {
+          const ext = file.name.split('.').pop()?.toLowerCase();
+          return !['csv', 'json', 'xlsx', 'xls'].includes(ext);
+        });
+
+        console.log('Supported files:', supportedFiles);
+        console.log('Unsupported files:', unsupportedFiles);
+
+        if (unsupportedFiles.length > 0) {
+          alert(`Unsupported file types: ${unsupportedFiles.map(f => f.name).join(', ')}\n\nSupported: CSV, JSON, XLSX, XLS`);
+          return;
+        }
+
+        if (supportedFiles.length === 0) {
+          alert('No supported files selected');
+          return;
+        }
+
+        console.log('Calling DataManager.importFiles');
+        const imported = await window.DataManager.importFiles(supportedFiles);
+        console.log('Import completed:', imported);
+
+        console.log('Getting updated sources list...');
+        sourcesMeta = await window.DataManager.listSources();
+        console.log('Sources updated:', sourcesMeta);
+
+        console.log('Re-rendering sources list...');
+        renderSourcesList();
+
+        console.log('Cleaning up UI...');
+        if (fileInput) fileInput.value = "";
+        displaySelectedFiles([]);
+        updateFileStatus(`Imported ${imported.length} file(s)`, 'ok');
+
+        console.log('Hiding spinner...');
+        hideSpinner();
+        console.log('Import process fully completed!');
+        } catch (err) {
+          console.error('Import error:', err);
+          hideSpinner();
+          updateFileStatus('Import failed: ' + err.message, 'error');
+          alert("Error importing files: " + err.message);
+        }
+      });
+      btnImport.setAttribute('data-listener-attached', 'true');
+    }
+
+    console.log('🎧 Setting up file input event listener...');
+    // File selection event listener
+    console.log('🎧 FILE INPUT SETUP: Starting...');
+    console.log('🎧 FILE INPUT SETUP: fileInput =', fileInput);
+    if (fileInput) {
+      console.log('✅ FILE INPUT SETUP: Attaching change listener');
+      fileInput.addEventListener("change", (event) => {
+        console.log('🔥 FILE SELECTION: CHANGE EVENT FIRED!');
+        console.log('🔥 FILE SELECTION: Files selected:', event.target.files.length);
+        handleFileSelection(event);
+      });
+      fileInput.addEventListener("input", () => {
+        console.log('📝 FILE INPUT: INPUT event fired');
+      });
+      fileInput.addEventListener("focus", () => {
+        console.log('👁️ FILE INPUT: Focused');
+      });
+      fileInput.addEventListener("click", () => {
+        console.log('🖱️ FILE INPUT: Clicked');
+      });
+      console.log('🎉 FILE INPUT SETUP: All listeners attached');
+    } else {
+      console.error('❌ FILE INPUT SETUP: File input element not found!');
+    }
+
     const sourcesUl = document.getElementById("sources-ul");
     const schemaPre = document.getElementById("schema-pre");
     const promptInput = document.getElementById("prompt-input");
@@ -708,62 +1173,6 @@
     sourcesMeta = await window.DataManager.listSources();
     renderSourcesList();
 
-    // File selection event listener
-    console.log('Adding file selection event listener');
-    fileInput.addEventListener("change", handleFileSelection);
-    console.log('File selection event listener added');
-
-    btnImport.addEventListener("click", async () => {
-      console.log('Import button clicked');
-      try {
-        const files = fileInput.files;
-        console.log('Files to import:', files);
-        console.log('Number of files:', files.length);
-
-        if (!files || !files.length) {
-          alert("Select at least one file first.");
-          return;
-        }
-
-        // Check file types and separate supported/unsupported
-        const allFiles = Array.from(files);
-        const supportedFiles = allFiles.filter(isSupportedFile);
-        const unsupportedFiles = allFiles.filter(f => !isSupportedFile(f));
-
-        console.log('Supported files:', supportedFiles.map(f => f.name));
-        console.log('Unsupported files:', unsupportedFiles.map(f => f.name));
-
-        if (unsupportedFiles.length) {
-          alert(`These files are not supported and will be skipped: ${unsupportedFiles.map(f => f.name).join(', ')}`);
-        }
-
-        if (!supportedFiles.length) {
-          alert("No supported files to import. Please choose CSV or JSON files.");
-          updateFileStatus('No supported files to import. Please choose CSV or JSON.', 'error');
-          return;
-        }
-
-        console.log('Calling DataManager.importFiles');
-        const imported = await window.DataManager.importFiles(supportedFiles);
-        console.log('Import result:', imported);
-        console.log('Imported files count:', imported.length);
-
-        sourcesMeta = await window.DataManager.listSources();
-        console.log('Updated sources:', sourcesMeta);
-        console.log('Sources count:', sourcesMeta.length);
-
-        renderSourcesList();
-        fileInput.value = "";
-        displaySelectedFiles([]); // Clear UI
-        updateFileStatus(`Imported ${imported.length} file(s)`, 'ok');
-      } catch (err) {
-        console.error('Import error:', err);
-        console.error('Error stack:', err.stack);
-        updateFileStatus('Import failed: ' + err.message, 'error');
-        alert("Error importing files: " + err.message);
-      }
-    });
-
     sourcesUl.addEventListener("click", async e => {
       const li = e.target.closest("li[data-source-id]");
       if (!li) return;
@@ -1095,7 +1504,7 @@
         }
         
         const usedSources = result.usedSources || (result.usedSource ? [result.usedSource] : []);
-        renderResults(result.rows, usedSources, resultsContainer, planCopy);
+        await renderResults(result.rows, usedSources, resultsContainer, planCopy);
 
         // Log successful prompt execution
         logPrompt(prompt, parsed, validation, {
@@ -1117,118 +1526,6 @@
       }
     });
 
-    function renderSourcesList() {
-      sourcesUl.innerHTML = "";
-      sourcesMeta.forEach(src => {
-        const li = document.createElement("li");
-        li.setAttribute("data-source-id", src.sourceId);
-        li.className = "source-item";
-        
-        // Detect entity types
-        const entities = window.DataManager.detectEntityTypes(src);
-        
-        // Create entity tags
-        const entityTags = entities.map(entity => {
-          const tag = document.createElement("span");
-          tag.className = `entity-tag entity-tag-${entity}`;
-          tag.textContent = entity;
-          return tag.outerHTML;
-        }).join("");
-        
-        li.innerHTML = `
-          <div class="source-item-header">
-            <div class="source-item-info">
-              <span class="source-name">${src.name}</span>
-              <div class="source-entities">${entityTags}</div>
-            </div>
-            <div class="source-item-actions">
-              <button class="btn-icon btn-update" title="Update source with new file (select file again to refresh schema)" data-action="update" data-source-id="${src.sourceId}">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M11.5 2.5C10.5 1.5 9.1 1 7.5 1C4.2 1 1.5 3.7 1.5 7C1.5 10.3 4.2 13 7.5 13C10.3 13 12.7 10.9 13.2 8.2"/>
-                  <path d="M11.5 2.5L13.5 1L11.5 4.5"/>
-                </svg>
-              </button>
-              <button class="btn-icon btn-delete" title="Remove source" data-action="delete" data-source-id="${src.sourceId}">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M3 3L11 11M11 3L3 11"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        `;
-        sourcesUl.appendChild(li);
-      });
-
-      if (!sourcesMeta.length) {
-        sourcesUl.innerHTML = `<li><small>No sources loaded yet.</small></li>`;
-      }
-      
-      // Add event listeners for update/delete buttons
-      sourcesUl.querySelectorAll('.btn-icon').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const action = btn.getAttribute('data-action');
-          const sourceId = btn.getAttribute('data-source-id');
-          
-          if (action === 'delete') {
-            if (confirm('Are you sure you want to remove this source?')) {
-              // Remove from DOM immediately
-              const sourceItem = btn.closest('li[data-source-id]');
-              if (sourceItem) {
-                sourceItem.style.opacity = '0.5';
-                sourceItem.style.transition = 'opacity 0.2s';
-                setTimeout(() => {
-                  sourceItem.remove();
-                }, 200);
-              }
-              
-              // Update sourcesMeta immediately
-              sourcesMeta = sourcesMeta.filter(s => s.sourceId !== sourceId);
-              
-              // Clear schema display if deleted source was selected
-              const schemaPre = document.getElementById("schema-pre");
-              if (schemaPre) schemaPre.textContent = "";
-              
-              // Perform async deletion in background
-              window.DataManager.deleteSource(sourceId).catch(err => {
-                console.error('Error removing source from database:', err);
-                // Re-render list if deletion failed
-                window.DataManager.listSources().then(updated => {
-                  sourcesMeta = updated;
-                  renderSourcesList();
-                });
-              });
-            }
-          } else if (action === 'update') {
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = '.csv,.json';
-            input.onchange = async (e) => {
-              const file = e.target.files[0];
-              if (!file) return;
-              
-              const updateBtn = btn;
-              try {
-                updateBtn.disabled = true;
-                updateBtn.style.opacity = '0.5';
-                updateBtn.style.cursor = 'wait';
-                await window.DataManager.updateSource(sourceId, file);
-                sourcesMeta = await window.DataManager.listSources();
-                renderSourcesList();
-              } catch (err) {
-                console.error(err);
-                alert('Error updating source: ' + err.message);
-              } finally {
-                updateBtn.disabled = false;
-                updateBtn.style.opacity = '1';
-                updateBtn.style.cursor = 'pointer';
-              }
-            };
-            input.click();
-          }
-        });
-      });
-    }
   }
 
   function detectDecimalPrecision(value) {
@@ -1253,7 +1550,7 @@
     return num.toFixed(Math.min(precision, 10));
   }
 
-  function renderResults(rows, usedSources, resultsContainer, queryPlan) {
+  async function renderResults(rows, usedSources, resultsContainer, queryPlan) {
     if (!rows || !rows.length) {
       resultsContainer.innerHTML = `<div class="results-empty">No rows matched the query.</div>`;
       return;
@@ -1279,6 +1576,15 @@
         // Add uniqueID as first column if it's not already there
         columns.unshift(uniqueIdField);
       }
+    }
+
+    // Generate column summaries based on data types and roles
+    const columnSummaries = await generateColumnSummaries(columns, rows, queryPlan, usedSources);
+
+    // Create summary bar if we have summaries to show
+    const summaryBar = createSummaryBar(columnSummaries);
+    if (summaryBar) {
+      resultsContainer.appendChild(summaryBar);
     }
 
     // Create table wrapper for sticky header
@@ -1317,13 +1623,13 @@
       if (isAggregated) {
         tr.className = "row-aggregated";
         tr.style.cursor = "pointer";
-        tr.addEventListener("click", () => {
+        tr.addEventListener("click", async () => {
           if (isExpanded) {
             expandedRows.delete(rowIndex);
           } else {
             expandedRows.add(rowIndex);
           }
-          renderResults(rows, usedSources, resultsContainer, queryPlan);
+          await renderResults(rows, usedSources, resultsContainer, queryPlan);
         });
       }
 
@@ -1410,6 +1716,13 @@
 
     resultsContainer.innerHTML = "";
     resultsContainer.appendChild(metaDiv);
+
+    // Re-append the summary bar if it was created
+    if (summaryBar) {
+      console.log('🔄 Re-appending summary bar after container clear');
+      resultsContainer.appendChild(summaryBar);
+    }
+
     resultsContainer.appendChild(tableWrapper);
   }
 
@@ -1490,10 +1803,49 @@
       }
     });
 
-    // kick off once DOM is ready
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", main);
-    } else {
-      main();
+  // kick off once DOM is ready
+  console.log('🚀 App initialization - document.readyState:', document.readyState);
+
+  function initializeApp() {
+    if (window.appInitialized) {
+      console.log('🚫 App already initialized, skipping');
+      return;
     }
+    console.log('🎯 Initializing app...');
+    window.appInitialized = true;
+    main();
+  }
+
+  // More robust DOM ready check
+  function checkDOMReady() {
+    if (document.readyState === 'complete' ||
+        (document.readyState !== 'loading' && document.body)) {
+      console.log('✅ DOM fully ready, initializing app');
+      initializeApp();
+      return;
+    }
+
+    // If still loading, wait for DOMContentLoaded
+    if (document.readyState === "loading") {
+      console.log('⏳ DOM still loading, waiting for DOMContentLoaded');
+      document.addEventListener("DOMContentLoaded", () => {
+        console.log('✅ DOMContentLoaded fired, checking if body exists');
+        // Double-check that body exists
+        if (document.body) {
+          initializeApp();
+        } else {
+          // Wait a bit more for body to exist
+          setTimeout(() => {
+            console.log('⚠️ Waiting additional time for DOM');
+            checkDOMReady();
+          }, 10);
+        }
+      });
+    } else {
+      console.log('✅ DOM in intermediate state, initializing app immediately');
+      initializeApp();
+    }
+  }
+
+  checkDOMReady();
 })();

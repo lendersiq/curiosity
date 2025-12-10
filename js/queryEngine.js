@@ -86,14 +86,11 @@ function buildPredicate(cond) {
 }
 
 async function executeQueryFromSource(queryPlan, source, conditions) {
-  const db = await window.DB.getDB();
-  const storeName = `rows_${source.sourceId}`;
-  if (!db.objectStoreNames.contains(storeName)) {
+  // Load all rows from session storage
+  const allRows = await window.DB.getAllRows(source.sourceId);
+  if (allRows.length === 0) {
     return [];
   }
-
-  const tx = db.transaction(storeName, "readonly");
-  const store = tx.objectStore(storeName);
 
   const predicates = conditions.map(buildPredicate);
   const logic = queryPlan.logicalOp || "AND";
@@ -107,27 +104,19 @@ async function executeQueryFromSource(queryPlan, source, conditions) {
 
   const resultRows = [];
 
-  await new Promise((resolve, reject) => {
-    const req = store.openCursor();
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return resolve();
-      const row = cursor.value;
+  // Filter rows using array operations
+  for (const row of allRows) {
+    let keep = true;
+    if (logic === "AND") {
+      keep = predicates.every(fn => fn(row));
+    } else if (logic === "OR") {
+      keep = predicates.some(fn => fn(row));
+    }
 
-      let keep = true;
-      if (logic === "AND") {
-        keep = predicates.every(fn => fn(row));
-      } else if (logic === "OR") {
-        keep = predicates.some(fn => fn(row));
-      }
-
-      if (keep) {
-        resultRows.push({ ...row, _sourceId: source.sourceId });
-      }
-      cursor.continue();
-    };
-    req.onerror = () => reject(req.error);
-  });
+    if (keep) {
+      resultRows.push({ ...row, _sourceId: source.sourceId });
+    }
+  }
 
   return resultRows;
 }
@@ -147,39 +136,28 @@ async function executeQueryPlan(queryPlan, sourcesMeta) {
   const candidateSource = pickSourceForEntity(mainEntity, sourcesMeta);
   if (!candidateSource) return { rows: [], usedSource: null, usedSources: [] };
 
-  const db = await window.DB.getDB();
-  const storeName = `rows_${candidateSource.sourceId}`;
-  if (!db.objectStoreNames.contains(storeName)) {
+  // Load all rows from session storage
+  const allRows = await window.DB.getAllRows(candidateSource.sourceId);
+  if (allRows.length === 0) {
     return { rows: [], usedSource: null, usedSources: [] };
   }
-
-  const tx = db.transaction(storeName, "readonly");
-  const store = tx.objectStore(storeName);
 
   const predicates = queryPlan.conditions.map(buildPredicate);
   const logic = queryPlan.logicalOp || "AND";
 
   const resultRows = [];
 
-  await new Promise((resolve, reject) => {
-    const req = store.openCursor();
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return resolve();
-      const row = cursor.value;
+  // Filter rows using array operations
+  for (const row of allRows) {
+    let keep = true;
+    if (logic === "AND") {
+      keep = predicates.every(fn => fn(row));
+    } else if (logic === "OR") {
+      keep = predicates.some(fn => fn(row));
+    }
 
-      let keep = true;
-      if (logic === "AND") {
-        keep = predicates.every(fn => fn(row));
-      } else if (logic === "OR") {
-        keep = predicates.some(fn => fn(row));
-      }
-
-      if (keep) resultRows.push(row);
-      cursor.continue();
-    };
-    req.onerror = () => reject(req.error);
-  });
+    if (keep) resultRows.push(row);
+  }
 
   return { rows: resultRows, usedSource: candidateSource, usedSources: [candidateSource] };
 }

@@ -129,7 +129,7 @@ async function mapConceptsToFields(sourceId, conditions) {
     // First priority: exact match for base noun (handles noun adjunct patterns)
     const exactBaseNounField = schema.fields.find(f =>
       f.name.toLowerCase() === baseNoun.toLowerCase() &&
-      (cond.valueType !== "number" || f.dataType === "number") &&
+      (cond.valueType !== "number" || f.dataType === "number" || f.dataType === "integer" || f.dataType === "currency") &&
       (cond.valueType !== "date" || f.dataType === "date")
     );
 
@@ -146,7 +146,7 @@ async function mapConceptsToFields(sourceId, conditions) {
     let bestScore = -1;
 
     for (const f of schema.fields) {
-      if (cond.valueType === "number" && f.dataType !== "number") continue;
+      if (cond.valueType === "number" && f.dataType !== "number" && f.dataType !== "integer" && f.dataType !== "currency") continue;
       if (cond.valueType === "date" && f.dataType !== "date") continue;
 
       const s = scoreFieldForConcept(f.name, cond.concept);

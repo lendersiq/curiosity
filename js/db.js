@@ -1,58 +1,121 @@
-// js/db.js
-const DB_NAME = "PrivateAIDB";
-let DB_VERSION = 1;
-
-let dbPromise = null;
+// js/db.js - Session-only in-memory storage (no persistence for security)
+let sessionStorage = {
+  sources: new Map(),
+  schemas: new Map(),
+  rows: new Map()
+};
 
 function initDB() {
-  if (dbPromise) return dbPromise;
-
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-
-    req.onupgradeneeded = event => {
-      const db = event.target.result;
-
-      if (!db.objectStoreNames.contains("sources")) {
-        const srcStore = db.createObjectStore("sources", { keyPath: "sourceId" });
-        srcStore.createIndex("byName", "name", { unique: false });
+  // No-op - in-memory storage doesn't need initialization
+  return Promise.resolve({
+    // Mock IDBDatabase interface for compatibility
+    objectStoreNames: {
+      contains: (name) => {
+        if (name === 'sources' || name === 'schemas') return true;
+        return name.startsWith('rows_');
       }
+    },
+    transaction: (storeNames, mode) => {
+      let pendingOperations = 0;
+      let transactionCompleted = false;
 
-      if (!db.objectStoreNames.contains("schemas")) {
-        db.createObjectStore("schemas", { keyPath: "sourceId" });
-      }
-      // rows_ stores are created dynamically
-    };
+      const completeTransaction = () => {
+        if (!transactionCompleted && pendingOperations === 0) {
+          transactionCompleted = true;
+          if (tx.oncomplete) tx.oncomplete();
+        }
+      };
 
-    req.onsuccess = () => {
-      const db = req.result;
-      // Update DB_VERSION to match actual version
-      DB_VERSION = db.version;
-      resolve(db);
-    };
-    
-    req.onerror = () => {
-      const error = req.error;
-      // Handle VersionError
-      if (error.name === "VersionError") {
-        // Try to open without version to get current version
-        const fallbackReq = indexedDB.open(DB_NAME);
-        fallbackReq.onsuccess = () => {
-          const db = fallbackReq.result;
-          DB_VERSION = db.version;
-          db.close();
-          // Retry with correct version
-          dbPromise = null;
-          resolve(initDB());
-        };
-        fallbackReq.onerror = () => reject(fallbackReq.error);
-      } else {
-        reject(error);
-      }
-    };
+      const tx = {
+        oncomplete: null,
+        onerror: null,
+        objectStore: (storeName) => ({
+          put: (data) => {
+            pendingOperations++;
+            const request = { onsuccess: null, onerror: null };
+            setTimeout(() => {
+              try {
+                if (storeName === 'sources') {
+                  sessionStorage.sources.set(data.sourceId, data);
+                } else if (storeName === 'schemas') {
+                  sessionStorage.schemas.set(data.sourceId, data);
+                }
+                if (request.onsuccess) request.onsuccess();
+              } catch (error) {
+                if (request.onerror) request.onerror();
+              } finally {
+                pendingOperations--;
+                completeTransaction();
+              }
+            }, 0);
+            return request;
+          },
+          get: (key) => {
+            pendingOperations++;
+            const request = { onsuccess: null, onerror: null, result: null };
+            setTimeout(() => {
+              try {
+                request.result = storeName === 'sources' ? sessionStorage.sources.get(key) :
+                                storeName === 'schemas' ? sessionStorage.schemas.get(key) : null;
+                if (request.onsuccess) request.onsuccess();
+              } catch (error) {
+                if (request.onerror) request.onerror();
+              } finally {
+                pendingOperations--;
+                completeTransaction();
+              }
+            }, 0);
+            return request;
+          },
+          getAll: () => {
+            pendingOperations++;
+            const request = { onsuccess: null, onerror: null, result: null };
+            setTimeout(() => {
+              try {
+                request.result = storeName === 'sources' ? Array.from(sessionStorage.sources.values()) :
+                                storeName === 'schemas' ? Array.from(sessionStorage.schemas.values()) : [];
+                if (request.onsuccess) request.onsuccess();
+              } catch (error) {
+                if (request.onerror) request.onerror();
+              } finally {
+                pendingOperations--;
+                completeTransaction();
+              }
+            }, 0);
+            return request;
+          },
+          add: (data) => {
+            pendingOperations++;
+            const request = { onsuccess: null, onerror: null };
+            setTimeout(() => {
+              try {
+                if (storeName.startsWith('rows_')) {
+                  const sourceId = storeName.replace('rows_', '');
+                  if (!sessionStorage.rows.has(sourceId)) {
+                    sessionStorage.rows.set(sourceId, []);
+                  }
+                  sessionStorage.rows.get(sourceId).push(data);
+                }
+                if (request.onsuccess) request.onsuccess();
+              } catch (error) {
+                if (request.onerror) request.onerror();
+              } finally {
+                pendingOperations--;
+                completeTransaction();
+              }
+            }, 0);
+            return request;
+          }
+        })
+      };
+
+      // Complete transaction after operations
+      setTimeout(() => completeTransaction(), 0);
+
+      return tx;
+    },
+    close: () => {} // No-op for session storage
   });
-
-  return dbPromise;
 }
 
 async function getDB() {
@@ -60,42 +123,14 @@ async function getDB() {
 }
 
 async function ensureRowsStore(sourceId) {
-  const db = await getDB();
-
-  if (db.objectStoreNames.contains(`rows_${sourceId}`)) return;
-
-  // Need to upgrade DB version to add a new store
-  DB_VERSION = db.version + 1;
-  db.close();
-
-  const upgradePromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = e => {
-      const upgradedDB = e.target.result;
-
-      if (!upgradedDB.objectStoreNames.contains("sources")) {
-        const srcStore = upgradedDB.createObjectStore("sources", { keyPath: "sourceId" });
-        srcStore.createIndex("byName", "name", { unique: false });
-      }
-
-      if (!upgradedDB.objectStoreNames.contains("schemas")) {
-        upgradedDB.createObjectStore("schemas", { keyPath: "sourceId" });
-      }
-
-      if (!upgradedDB.objectStoreNames.contains(`rows_${sourceId}`)) {
-        upgradedDB.createObjectStore(`rows_${sourceId}`, {
-          keyPath: "rowId",
-          autoIncrement: true
-        });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-
-  const upgradedDB = await upgradePromise;
-  dbPromise = Promise.resolve(upgradedDB);
+  // No-op - session storage doesn't need store creation
+  return Promise.resolve();
 }
 
-// expose globally
-window.DB = { initDB, getDB, ensureRowsStore };
+async function getAllRows(sourceId) {
+  // Return rows from session storage
+  return sessionStorage.rows.get(sourceId) || [];
+}
+
+// Expose functions globally
+window.DB = { initDB, getDB, ensureRowsStore, getAllRows };
