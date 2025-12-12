@@ -183,9 +183,106 @@ function parsePrompt(prompt) {
 
   // Combine all conditions
   const allConditions = [...betweenConditions, ...conditions, ...dateConditions];
+
+  // If no branch condition was parsed yet, try to infer one from "in <name> branch"
+  if (!allConditions.some(c => c.concept === "branch")) {
+    const branchNameMatch =
+      text.match(/\bin\s+the\s+([^,]+?)\s+branch\b/i) ||
+      text.match(/\bin\s+([^,]+?)\s+branch\b/i);
+    if (branchNameMatch && branchNameMatch[1]) {
+      allConditions.push({
+        concept: "branch",
+        op: "=",
+        value: branchNameMatch[1].trim(),
+        valueType: "string",
+        inferred: true
+      });
+    }
+  }
+
+  // Translator-driven inference: if text contains a known translator key, add condition for that translator type
+  if (window.Translators) {
+    const isHelper = key => key === '_meta' || key === 'registerTranslator';
+    const metaRoot = window.Translators._meta || {};
+    const lowerText = text.toLowerCase();
+    const escapeRegExp = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    for (const [type, map] of Object.entries(window.Translators)) {
+      if (isHelper(type) || !map) continue;
+      const meta = metaRoot[type] || {};
+      const synonyms = [type].concat(meta.synonyms || []).map(s => s.toLowerCase());
+      const canonicalLookup = {
+        branches: "branch",
+        officers: "officer"
+      };
+      const canonicalConcept = (
+        meta.canonical ||
+        canonicalLookup[type.toLowerCase()] ||
+        type
+      ).toLowerCase();
+
+      // Skip if a condition for this concept (or its synonyms) already exists
+      const hasConcept = allConditions.some(c => c.concept && synonyms.includes(c.concept.toString().toLowerCase()));
+      if (hasConcept) continue;
+
+      // Generic numeric reference (e.g., "rm #92", "officer 12", "branch number 4") using translator synonyms
+      if (synonyms.length > 0) {
+        const synonymPattern = synonyms.map(escapeRegExp).join("|");
+        const numericRegex = new RegExp(`\\b(?:${synonymPattern})s?\\s+(?:number\\s+|no\\.?\\s+|#\\s*)?(\\d+)\\b`, "i");
+        const numMatch = numericRegex.exec(lowerText);
+        if (numMatch && numMatch[1]) {
+          allConditions.push({
+            concept: canonicalConcept,
+            op: "=",
+            value: Number(numMatch[1]),
+            valueType: "number",
+            inferred: true,
+            translationCandidate: true
+          });
+          continue; // already added one condition for this translator type
+        }
+      }
+
+      const keys = Object.keys(map);
+      for (const key of keys) {
+        if (!key) continue;
+        const keyLower = key.toLowerCase();
+        const escapedKey = escapeRegExp(keyLower);
+        const nameRegex = new RegExp(`\\b${escapedKey}\\b`, "i");
+        const keyTokens = keyLower.split(/\s+/).filter(Boolean);
+
+        // Build a shortened form by dropping any synonym tokens from the key (e.g., "meadowvale branch" -> "meadowvale")
+        const synonymSet = new Set(synonyms);
+        const baseTokens = keyTokens.filter(t => !synonymSet.has(t));
+        const baseKey = baseTokens.join(" ").trim();
+        const baseRegex = baseKey ? new RegExp(`\\b${escapeRegExp(baseKey)}\\b`, "i") : null;
+
+        const synonymHit = synonyms.some(s => lowerText.includes(s));
+        const baseTokensPresent = baseTokens.length > 0 && baseTokens.every(t => lowerText.includes(t));
+
+        if (
+          nameRegex.test(lowerText) ||
+          (baseRegex && baseRegex.test(lowerText)) ||
+          (synonymHit && baseTokensPresent)
+        ) {
+          allConditions.push({
+            concept: canonicalConcept,
+            op: "=",
+            value: key,
+            valueType: "string",
+            inferred: true,
+            translationCandidate: true
+          });
+          break; // only add one per translator type
+        }
+      }
+    }
+  }
+
+  const translatedConditions = applyTranslatorsToConditions(allConditions);
   
   // Check if "branch" appears in conditions (e.g., "in branch 4", "branch number 4", "branch #4")
-  const hasBranchCondition = allConditions.some(c => c.concept === "branch");
+  const hasBranchCondition = translatedConditions.some(c => c.concept === "branch");
   const branchInCondition = /\b(?:in|at)\s+branch\s+(?:number\s+|no\.?\s+|#\s*)?\d+/i.test(text);
 
   // Enhanced entity extraction with confidence scores and fuzzy matching
@@ -234,14 +331,14 @@ function parsePrompt(prompt) {
   }
 
   // Sort by confidence and remove duplicates (keep highest confidence)
-  const uniqueEntities = new Map();
+  const uniqueEntityMap = new Map();
   for (const match of entityMatches.sort((a, b) => b.confidence - a.confidence)) {
-    if (!uniqueEntities.has(match.entity)) {
-      uniqueEntities.set(match.entity, match);
+    if (!uniqueEntityMap.has(match.entity)) {
+      uniqueEntityMap.set(match.entity, match);
     }
   }
 
-  let targetEntities = Array.from(uniqueEntities.values());
+  let targetEntities = Array.from(uniqueEntityMap.values());
 
 
   // If no entities remain but we detected a branch condition, treat branches as the target
@@ -256,67 +353,49 @@ function parsePrompt(prompt) {
   // Convert to final format (backward compatibility)
   const finalTargetEntities = targetEntities.map(match => match.entity);
 
-  // Detect function calls dynamically from function libraries (moved here after entities are determined)
+  // Detect function calls dynamically from function libraries (keyword-driven)
   // Skip function detection if we already found a statistical operation
   let functionCall = null;
   if (window.FunctionRegistry && !statisticalOp) {
+    const lowerText = lower;
+
     // Only detect functions for explicit function intent (not basic queries)
     const explicitFunctionWords = ['calculate', 'compute', 'determine', 'measure', 'estimate'];
-    const hasExplicitFunctionIntent = explicitFunctionWords.some(word => lower.includes(word));
+    const hasExplicitFunctionIntent = explicitFunctionWords.some(word => lowerText.includes(word));
 
     // Allow function detection for "find/get + function pattern" but not basic data queries
-    const hasFunctionPattern = lower.includes('average') || lower.includes('mean') ||
-                              lower.includes('total') || lower.includes('sum') ||
-                              lower.includes('count') || lower.includes('minimum') ||
-                              lower.includes('maximum') || lower.includes('standard deviation');
+    const hasFunctionPattern = lowerText.includes('average') || lowerText.includes('mean') ||
+                              lowerText.includes('total') || lowerText.includes('sum') ||
+                              lowerText.includes('count') || lowerText.includes('minimum') ||
+                              lowerText.includes('maximum') || lowerText.includes('standard deviation') ||
+                              lowerText.includes('profit') || lowerText.includes('interest');
 
-    const hasFunctionIntent = hasExplicitFunctionIntent || (hasFunctionPattern && (lower.includes('find') || lower.includes('get')));
+    const hasFunctionIntent = hasExplicitFunctionIntent || (hasFunctionPattern && (lowerText.includes('find') || lowerText.includes('get') || lowerText.includes('calculate') || lowerText.includes('show')));
 
     // Skip function detection for multi-entity queries (they don't make sense)
     const isMultiEntityQuery = finalTargetEntities.length > 1;
 
     if (hasFunctionIntent && !isMultiEntityQuery) {
-      // Dynamically get all function keywords from libraries
-      const allFunctionKeywords = getAllFunctionKeywords();
-
-      // Search for matching keywords in the prompt
-      for (const keyword of allFunctionKeywords) {
-        if (lower.includes(keyword.toLowerCase())) {
-          const found = window.FunctionRegistry.findFunctionByDescription(keyword);
-          if (found) {
-            functionCall = {
-              library: found.library,
-              functionName: found.functionName,
-              description: found.function.description
-            };
-            break;
-          }
-        }
-      }
-
-      // Also try searching by individual words if no match found
-      if (!functionCall) {
-        const words = lower.split(/\s+/);
-        for (let i = 0; i < words.length - 1; i++) {
-          const phrase = words[i] + ' ' + words[i + 1];
-          const found = window.FunctionRegistry.findFunctionByDescription(phrase);
-          if (found) {
-            functionCall = {
-              library: found.library,
-              functionName: found.functionName,
-              description: found.function.description
-            };
-            break;
-          }
-        }
+      const found = window.FunctionRegistry.findBestFunctionByPrompt(lowerText);
+      if (found) {
+        functionCall = {
+          library: found.library,
+          functionName: found.functionName,
+          description: found.function.description
+        };
       }
     }
   }
 
+  let filteredEntities = Array.from(new Set(finalTargetEntities));
+
+  // Always drop translator/reference entities as target entities
+  filteredEntities = filteredEntities.filter(e => e !== 'branches' && e !== 'branch');
+
   return {
     intent,
-    targetEntities: Array.from(new Set(finalTargetEntities)),
-    conditions: allConditions,
+    targetEntities: filteredEntities,
+    conditions: translatedConditions,
     logicalOp,
     statisticalOp,
     statisticalField,
@@ -324,6 +403,69 @@ function parsePrompt(prompt) {
     raw: text,
     _entityDetails: targetEntities // Keep detailed entity info for debugging
   };
+}
+
+function applyTranslatorsToConditions(conditions) {
+  if (!Array.isArray(conditions) || !window.Translators) return conditions;
+
+  const isHelper = key => key === '_meta' || key === 'registerTranslator';
+  const metaRoot = window.Translators._meta || {};
+
+  // Build case-insensitive lookups for all translator maps
+  const lookups = {};
+  for (const [type, map] of Object.entries(window.Translators)) {
+    if (isHelper(type) || !map) continue;
+    const lu = {};
+    for (const [k, v] of Object.entries(map)) {
+      if (k == null) continue;
+      lu[k] = v;
+      lu[k.toLowerCase()] = v;
+    }
+    lookups[type] = lu;
+  }
+
+  return conditions.map(cond => {
+    if (!cond || cond.value == null || cond.concept == null) return cond;
+
+    // Normalize concept and value
+    const condConcept = cond.concept.toString().toLowerCase();
+    const valueStr = cond.value.toString().trim();
+    const valueKey = valueStr.toLowerCase();
+
+    for (const [type, lu] of Object.entries(lookups)) {
+      const meta = metaRoot[type] || {};
+      const synonyms = [type].concat(meta.synonyms || []).map(s => s.toLowerCase());
+      if (!synonyms.includes(condConcept)) continue;
+
+      // Try variations: raw string, lower string, and string + each synonym (e.g., "brookside branch")
+      const variations = new Set([valueKey, valueStr]);
+      synonyms.forEach(syn => {
+        variations.add(`${valueKey} ${syn}`);
+        variations.add(`${valueStr} ${syn}`);
+      });
+
+      let mapped;
+      for (const variant of variations) {
+        if (lu[variant] !== undefined) {
+          mapped = lu[variant];
+          break;
+        }
+      }
+
+      if (mapped !== undefined) {
+        const inferredValueType = typeof mapped === 'number' && !Number.isNaN(mapped) ? 'number' : 'string';
+        return {
+          ...cond,
+          value: mapped,
+          valueType: inferredValueType,
+          translated: true,
+          translationSource: type
+        };
+      }
+    }
+
+    return cond;
+  });
 }
 
 function extractFieldFromPhrase(phrase) {
@@ -848,6 +990,8 @@ function parseConditionFragment(fragment) {
       valueType: "number"
     });
   }
+
+  // Officer-specific parsing is removed in favor of generic translator-driven inference (symmetry with branches)
 
   // "of type X" or "type X"
   const typeMatch = fragment.match(/\b(?:of\s+)?type\s+(\d+)/i);

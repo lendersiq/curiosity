@@ -269,6 +269,23 @@
       }
     }
 
+    // If this column is produced by a function, derive metadata from the function definition
+    if (queryPlan && queryPlan.functionCall) {
+      const { functionCall } = queryPlan;
+      if (functionCall.functionName === columnName && functionCall.library && window.FunctionLibrary) {
+        const lib = window.FunctionLibrary[functionCall.library];
+        const func = lib && lib.functions && lib.functions[functionCall.functionName];
+        if (func) {
+          if (func.returnType === 'currency') {
+            return { dataType: 'currency', roleGuess: 'field', returnType: func.returnType };
+          }
+          if (func.returnType === 'percentage') {
+            return { dataType: 'number', roleGuess: 'field', returnType: func.returnType };
+          }
+        }
+      }
+    }
+
     // Enhanced fallback: detect from column name patterns
     const lowerName = columnName.toLowerCase();
 
@@ -334,7 +351,8 @@
     if (typeof value === 'number') {
       if (type === 'percentage') {
         const p = Number.isFinite(precision) ? precision : 2;
-        return `${value.toFixed(p)}%`;
+        const scaled = value * 100;
+        return `${scaled.toFixed(p)}%`;
       }
       if (Number.isInteger(value)) {
         return value.toLocaleString();
@@ -1231,9 +1249,17 @@
     });
 
     btnRun.addEventListener("click", async () => {
+      let parsed = null;
       try {
+        // Always refresh sources list before running a query
+        sourcesMeta = await window.DataManager.listSources();
+        if (!sourcesMeta || sourcesMeta.length === 0) {
+          alert("No data sources loaded. Please import a file first.");
+          return;
+        }
+
         const prompt = promptInput.value;
-        const parsed = window.NLPEngine.parsePrompt(prompt);
+        parsed = window.NLPEngine.parsePrompt(prompt);
 
         const planCopy = { ...parsed, conditions: [...parsed.conditions] };
 
@@ -1516,7 +1542,7 @@
         console.error(err);
 
         // Log failed prompt execution
-        logPrompt(prompt, parsed, validation, {
+        logPrompt(prompt, parsed || {}, validation || { isValid: false, confidence: 0, issues: [] }, {
           success: false,
           rowsReturned: 0,
           error: err.message
@@ -1550,6 +1576,13 @@
     return num.toFixed(Math.min(precision, 10));
   }
 
+  function formatCurrencyUSD(value) {
+    if (value == null || value === '') return '';
+    const num = typeof value === 'number' ? value : Number(String(value).replace(/[^0-9.\-]/g, ''));
+    if (Number.isNaN(num)) return value;
+    return num.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
   async function renderResults(rows, usedSources, resultsContainer, queryPlan) {
     if (!rows || !rows.length) {
       resultsContainer.innerHTML = `<div class="results-empty">No rows matched the query.</div>`;
@@ -1576,6 +1609,12 @@
         // Add uniqueID as first column if it's not already there
         columns.unshift(uniqueIdField);
       }
+    }
+
+    // Preload column metadata once (dataType, roleGuess, etc.)
+    const columnMetaMap = {};
+    for (const columnName of columns) {
+      columnMetaMap[columnName] = await getColumnMetadata(columnName, queryPlan, usedSources);
     }
 
     // Generate column summaries based on data types and roles
@@ -1642,7 +1681,28 @@
         } else {
           const isValuation = valuationFields.includes(col);
           const value = row[col];
-          td.textContent = isValuation ? formatNumber(value, true) : (value != null ? value : '');
+          const meta = columnMetaMap[col] || {};
+          const dataType = meta.dataType;
+
+          // If a function computed this column and provided a returnType, honor it
+          const columnReturnType = meta.returnType;
+
+          if (columnReturnType === 'currency') {
+            td.textContent = formatCurrencyUSD(value);
+          } else if (columnReturnType === 'percentage') {
+            const num = Number(value);
+            if (!Number.isNaN(num)) {
+              td.textContent = `${(num * 100).toFixed(2)}%`;
+            } else {
+              td.textContent = value != null ? value : '';
+            }
+          } else if (dataType === 'currency') {
+            td.textContent = formatCurrencyUSD(value);
+          } else if (isValuation) {
+            td.textContent = formatNumber(value, true);
+          } else {
+            td.textContent = value != null ? value : '';
+          }
         }
         
         tr.appendChild(td);

@@ -219,6 +219,16 @@ async function importFiles(fileList) {
     console.log(`📋 Schema built with ${fields.length} fields`);
     console.log(`📋 Field types:`, fields.map(f => `${f.name}: ${f.dataType}`));
 
+    // Detect and register translators (e.g., branch name → branch id)
+    const translatorInfo = detectTranslator(fields);
+    if (translatorInfo) {
+      const translatorMap = buildTranslatorMap(translatorInfo, parsed.rows);
+      if (translatorMap && Object.keys(translatorMap).length) {
+        ensureTranslatorRegistry();
+        window.Translators.registerTranslator(translatorInfo.type, translatorMap);
+      }
+    }
+
     // Create separate transaction for metadata
     console.log(`💾 Storing metadata for source ${sourceId}...`);
     const txSources = db.transaction(["sources", "schemas"], "readwrite");
@@ -317,6 +327,73 @@ async function importFiles(fileList) {
 
   console.log('✅ importFiles completed, returning:', imported);
   return imported;
+}
+
+function ensureTranslatorRegistry() {
+  if (!window.Translators) {
+    window.Translators = { registerTranslator: (type, map) => { window.Translators[type] = { ...(window.Translators[type] || {}), ...map }; } };
+  } else if (typeof window.Translators.registerTranslator !== 'function') {
+    window.Translators.registerTranslator = (type, map) => {
+      if (!window.Translators[type]) window.Translators[type] = {};
+      Object.assign(window.Translators[type], map);
+    };
+  }
+}
+
+function detectTranslator(fields) {
+  if (!fields || fields.length < 2) return null;
+  const lowerFields = fields.map(f => ({ ...f, lower: f.name.toLowerCase(), idLower: f.id.toLowerCase() }));
+
+  // Simple two-column map detectors
+  const integerField = lowerFields.find(f => f.dataType === 'integer');
+  const stringField = lowerFields.find(f => f.dataType !== 'integer');
+
+  if (!integerField || !stringField) return null;
+
+  // Branch translator: branch_number + branch_name
+  const isBranchTranslator =
+    (integerField.lower.includes('branch') || integerField.idLower.includes('branch')) &&
+    (stringField.lower.includes('branch') || stringField.idLower.includes('branch') || stringField.lower.includes('name'));
+
+  if (isBranchTranslator) {
+    return {
+      type: 'branches',
+      idField: integerField.id,
+      nameField: stringField.id
+    };
+  }
+
+  // Officer translator: officer_id + officer_name
+  const isOfficerTranslator =
+    (integerField.lower.includes('officer') || integerField.idLower.includes('officer') || integerField.lower.includes('rm') || integerField.idLower.includes('rm') || integerField.lower.includes('id')) &&
+    (stringField.lower.includes('officer') || stringField.idLower.includes('officer') || stringField.lower.includes('name'));
+
+  if (isOfficerTranslator) {
+    return {
+      type: 'officer',
+      idField: integerField.id,
+      nameField: stringField.id
+    };
+  }
+
+  return null;
+}
+
+function buildTranslatorMap(info, rows) {
+  const map = {};
+  if (!info || !rows || !rows.length) return map;
+  const { idField, nameField } = info;
+  rows.forEach(r => {
+    const nameRaw = r[nameField];
+    const codeRaw = r[idField];
+    const key = nameRaw == null ? '' : nameRaw.toString().trim().toLowerCase();
+    const code = Number(codeRaw);
+    if (key && !Number.isNaN(code)) {
+      map[key] = code;
+    }
+  });
+  console.log(`🧭 Translator detected [${info.type}]`, map);
+  return map;
 }
 
 function formatBytes(bytes) {

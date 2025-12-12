@@ -5,6 +5,7 @@
 // If a field name matches one word and a prompt word matches another in the same group, they're associated
 const SEMANTIC_GROUPS = [
   ["branch", "branch_number", "branchnumber", "location", "office", "branch_id"],
+  ["officer", "officer_id", "officerid", "rm", "rm_id", "relationship_manager", "relationshipmanager", "relationship_mgr", "relationship", "manager", "owner", "owner_id", "ownerid", "owner_code", "ownercode"],
   ["class", "type", "category", "group", "classification", "class_code", "classcode", "kind"],
   ["principal", "loan_amount", "amount", "balance", "origination", "loan_balance", "principal_amount"],
   ["checking", "checking_balance", "checking_account", "checking_amount"],

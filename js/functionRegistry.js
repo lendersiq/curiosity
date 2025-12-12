@@ -1,55 +1,138 @@
 // js/functionRegistry.js
 // Function registry for discovering and executing library functions
 
-/**
- * Search for functions matching a description or keyword
- */
-function findFunctionByDescription(searchText) {
-  if (!window.FunctionLibrary) return null;
+const stopWords = new Set([
+  'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+  'an', 'a', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has',
+  'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+  'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it',
+  'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'its',
+  'our', 'their', 'what', 'which', 'who', 'when', 'where', 'why', 'how'
+]);
 
-  const lower = searchText.toLowerCase();
-  const keywords = lower.split(/\s+/);
+let cachedKeywordEntries = null;
 
-  // Common stop words to exclude
-  const stopWords = new Set([
-    'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-    'an', 'a', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has',
-    'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
-    'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it',
-    'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'its',
-    'our', 'their', 'what', 'which', 'who', 'when', 'where', 'why', 'how'
-  ]);
+function normalizeKeywordsFromDescription(desc) {
+  return desc
+    .toLowerCase()
+    .split(/\s+/)
+    .map(k => k.replace(/[^a-z0-9]/g, ''))
+    .filter(k => k.length >= 3 && !stopWords.has(k));
+}
 
-  // Filter out stop words and short words
-  const meaningfulKeywords = keywords.filter(keyword =>
-    keyword.length >= 3 && !stopWords.has(keyword)
-  );
+function buildKeywordEntries() {
+  const entries = [];
+  if (!window.FunctionLibrary) return entries;
 
-  if (meaningfulKeywords.length === 0) return null;
-
-  // Search through all libraries
   for (const libName in window.FunctionLibrary) {
     const library = window.FunctionLibrary[libName];
     if (!library || !library.functions) continue;
 
     for (const funcName in library.functions) {
       const func = library.functions[funcName];
-      const descLower = func.description.toLowerCase();
+      if (!func) continue;
+      const keywords = new Set();
 
-      // Check if any meaningful keyword matches the description
-      for (const keyword of meaningfulKeywords) {
-        if (descLower.includes(keyword)) {
-          return {
-            library: libName,
-            functionName: funcName,
-            function: func
-          };
-        }
+      // From explicit keywords
+      if (Array.isArray(func.keywords)) {
+        func.keywords.forEach(k => {
+          if (!k) return;
+          const normalized = k.toLowerCase().trim();
+          if (normalized && normalized.length >= 2) keywords.add(normalized);
+          // Also split multi-word keywords into tokens
+          normalized.split(/\s+/).forEach(tok => {
+            if (tok && tok.length >= 3 && !stopWords.has(tok)) keywords.add(tok);
+          });
+        });
       }
+
+      // From function name
+      const fnLower = funcName.toLowerCase();
+      keywords.add(fnLower);
+      fnLower.split(/[^a-z0-9]+/).forEach(tok => {
+        if (tok && tok.length >= 3 && !stopWords.has(tok)) keywords.add(tok);
+      });
+
+      // From description tokens
+      if (func.description) {
+        normalizeKeywordsFromDescription(func.description).forEach(k => keywords.add(k));
+      }
+
+      entries.push({
+        library: libName,
+        functionName: funcName,
+        function: func,
+        keywords,
+        descriptionLower: (func.description || '').toLowerCase()
+      });
     }
   }
 
-  return null;
+  return entries;
+}
+
+function getKeywordEntries() {
+  if (!cachedKeywordEntries) {
+    cachedKeywordEntries = buildKeywordEntries();
+  }
+  return cachedKeywordEntries;
+}
+
+/**
+ * Find the best matching function for a prompt using keyword/tag scoring.
+ */
+function findBestFunctionByPrompt(promptText) {
+  if (!promptText || !window.FunctionLibrary) return null;
+  const lowerPrompt = promptText.toLowerCase();
+  const tokens = lowerPrompt
+    .split(/\s+/)
+    .map(t => t.replace(/[^a-z0-9]/g, ''))
+    .filter(t => t.length >= 3 && !stopWords.has(t));
+
+  if (tokens.length === 0) return null;
+
+  const entries = getKeywordEntries();
+  let best = null;
+  let bestScore = 0;
+
+  for (const entry of entries) {
+    let score = 0;
+
+    // Exact keyword phrase hits (keywords may include spaces)
+    if (entry.keywords) {
+      for (const kw of entry.keywords) {
+        if (!kw) continue;
+        if (kw.length >= 3 && lowerPrompt.includes(kw)) {
+          score += 3;
+        }
+      }
+    }
+
+    // Token overlap
+    for (const t of tokens) {
+      if (entry.keywords && entry.keywords.has(t)) score += 2;
+      else if (entry.descriptionLower && entry.descriptionLower.includes(t)) score += 1;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = entry;
+    }
+  }
+
+  return bestScore > 0 ? {
+    library: best.library,
+    functionName: best.functionName,
+    function: best.function
+  } : null;
+}
+
+/**
+ * Backward-compatible search for a function matching a description or keyword.
+ * Now delegates to the best-match scorer.
+ */
+function findFunctionByDescription(searchText) {
+  return findBestFunctionByPrompt(searchText);
 }
 
 /**
@@ -100,12 +183,16 @@ async function mapFunctionParameters(sourceId, functionInfo) {
       fieldName = schema.fields.find(f => 
         f.name.toLowerCase().includes('maturity') || f.id.toLowerCase().includes('maturity')
       )?.id;
-    } else if (paramLower === 'term') {
-      // Try Months first, then Term
-      fieldName = schema.fields.find(f => 
-        f.name.toLowerCase() === 'months' || f.id.toLowerCase() === 'months' ||
-        f.name.toLowerCase() === 'term' || f.id.toLowerCase() === 'term'
-      )?.id;
+    } else if (paramLower === 'term' || paramLower === 'termmonths') {
+      // Prefer months/term fields
+      fieldName = schema.fields.find(f => {
+        const n = f.name.toLowerCase();
+        const i = f.id.toLowerCase();
+        return n === 'months' || i === 'months' ||
+               n === 'term' || i === 'term' ||
+               n.includes('months') || i.includes('months') ||
+               n.includes('term') || i.includes('term');
+      })?.id;
     }
     
     if (fieldName) {
@@ -164,6 +251,7 @@ function executeFunctionOnRow(row, functionInfo, fieldMapping) {
 // expose globally
 window.FunctionRegistry = {
   findFunctionByDescription,
+  findBestFunctionByPrompt,
   getFunctionParameters,
   mapFunctionParameters,
   executeFunctionOnRow
