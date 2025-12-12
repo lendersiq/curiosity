@@ -93,6 +93,10 @@
 
   <!-- NO type="module" – classic scripts for file:// -->
   <script src="js/db.js"></script>
+  <!-- Load institution-provided translators first (defines window.Translators data) -->
+  <script src="translator/custom_translator.js"></script>
+  <!-- Loader/registry merges translators and exposes registerTranslator -->
+  <script src="translator/translator_loader.js"></script>
   <script src="js/dataManager.js"></script>
   <script src="js/nlpEngine.js"></script>
   <script src="js/conceptMapper.js"></script>

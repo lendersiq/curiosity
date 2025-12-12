@@ -142,6 +142,19 @@ This document contains examples of natural language queries you can use with the
 "show branch customer counts"
 ```
 
+## 🌐 Translator-Based Queries (names → IDs)
+
+These use institution-defined translators loaded at startup (`translator/custom_translator.js`). Names are matched case-insensitively, and synonyms from translator metadata (e.g., "location" for branches, "rm" for officers) are honored.
+
+```
+"show loans in the Lakeside branch"              // branch name → branch id
+"show loans in the Brookside branch"             // name → id, inferred condition
+"show loans in branch 4"                         // numeric branch id
+"show loans assigned to Hannah Martinez"         // officer name → officer id
+"show loans managed by rm #92"                   // officer numeric id
+"show loans for location Meadowvale"             // uses branch synonyms
+```
+
 ## 💰 Financial Calculations
 
 ### Loan Calculations
