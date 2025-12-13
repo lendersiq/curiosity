@@ -211,13 +211,12 @@ function parsePrompt(prompt) {
       if (isHelper(type) || !map) continue;
       const meta = metaRoot[type] || {};
       const synonyms = [type].concat(meta.synonyms || []).map(s => s.toLowerCase());
-      const canonicalLookup = {
-        branches: "branch",
-        officers: "officer"
-      };
+
+      // Build canonical concept from translator metadata (data-driven)
       const canonicalConcept = (
         meta.canonical ||
-        canonicalLookup[type.toLowerCase()] ||
+        (type.toLowerCase().endsWith('es') ? type.slice(0, -2) :
+         type.toLowerCase().replace(/s$/i, '')) ||
         type
       ).toLowerCase();
 
