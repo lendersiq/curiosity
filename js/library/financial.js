@@ -8,6 +8,7 @@
   const functions = {
     untilMaturity: {
       description: "Calculates months until maturity date from a given maturity date string",
+      keywords: ["until maturity", "months until maturity", "maturity months", "time to maturity"],
       implementation: function(maturity) {
         if (!maturity) return { monthsUntilMaturity: 0 };
         const maturityDate = new Date(maturity);
@@ -23,6 +24,7 @@
 
     averagePrincipal: {
       description: "Calculates the average balance of a loan over its term using maturity date",
+      keywords: ["average principal", "mean principal", "average balance", "loan average balance"],
       implementation: function(principal, payment, rate, maturity, term, sourceIndex) {
         if (!principal || principal <= 0) return 0;
         
@@ -102,6 +104,41 @@
         
         const averagePrincipal = cummulativePrincipal / month;
         return parseFloat(averagePrincipal.toFixed(2));
+      }
+    },
+
+    profit: {
+      description: "Calculates profit (interest earned) on a loan given principal, rate, and optional term in months",
+      keywords: ["profit", "interest", "interest earned", "interest income"],
+      returnType: "currency",
+      implementation: function(principal, rate, termMonths) {
+        // Validate inputs
+        if (principal == null || rate == null) return 0;
+
+        // Normalize numeric inputs (strip currency/percent symbols/commas)
+        const toNumber = (v) => {
+          if (v == null) return NaN;
+          return Number(String(v).replace(/[^0-9.\-]/g, ""));
+        };
+
+        const p = toNumber(principal);
+        let r = toNumber(rate);
+        if (Number.isNaN(p) || Number.isNaN(r) || p <= 0) return 0;
+
+        // Convert percent to decimal if needed
+        if (r > 1) {
+          r = r / 100;
+        }
+
+        // Term defaults to 12 months if not provided or invalid
+        let months = toNumber(termMonths);
+        if (Number.isNaN(months) || months <= 0) months = 12;
+        // Clamp to reasonable range to avoid runaway profits
+        months = Math.max(1, Math.min(months, 360));
+
+        // Simple interest approximation: principal * rate * (months / 12)
+        const profit = p * r * (months / 12);
+        return parseFloat(profit.toFixed(2));
       }
     }
   };
