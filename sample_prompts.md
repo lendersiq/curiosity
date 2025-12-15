@@ -159,7 +159,7 @@ These use institution-defined translators loaded at startup (`translator/custom_
 
 ### Loan Calculations
 ```
-"calculate average principal"
+"calculate average loan principal"
 "find average balance over loan term"
 "compute months until maturity"
 "calculate loan payment amounts"
