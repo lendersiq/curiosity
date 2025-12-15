@@ -8,7 +8,8 @@
   const functions = {
     untilMaturity: {
       description: "Calculates months until maturity date from a given maturity date string",
-      keywords: ["until maturity", "months until maturity", "maturity months", "time to maturity"],
+      entities: ["loans"],
+      returnType: "currency",
       implementation: function(maturity) {
         if (!maturity) return { monthsUntilMaturity: 0 };
         const maturityDate = new Date(maturity);
@@ -24,7 +25,8 @@
 
     averagePrincipal: {
       description: "Calculates the average balance of a loan over its term using maturity date",
-      keywords: ["average principal", "mean principal", "average balance", "loan average balance"],
+      entities: ["loans"],
+      returnType: "currency",
       implementation: function(principal, payment, rate, maturity, term, sourceIndex) {
         if (!principal || principal <= 0) return 0;
         
@@ -107,9 +109,9 @@
       }
     },
 
-    profit: {
+    loanProfit: {
       description: "Calculates profit (interest earned) on a loan given principal, rate, and optional term in months",
-      keywords: ["profit", "interest", "interest earned", "interest income"],
+      entities: ["loans"],
       returnType: "currency",
       implementation: function(principal, rate, termMonths) {
         // Validate inputs
@@ -123,6 +125,8 @@
 
         const p = toNumber(principal);
         let r = toNumber(rate);
+        let months = termMonths ? toNumber(termMonths) : 12;
+
         if (Number.isNaN(p) || Number.isNaN(r) || p <= 0) return 0;
 
         // Convert percent to decimal if needed
@@ -131,7 +135,6 @@
         }
 
         // Term defaults to 12 months if not provided or invalid
-        let months = toNumber(termMonths);
         if (Number.isNaN(months) || months <= 0) months = 12;
         // Clamp to reasonable range to avoid runaway profits
         months = Math.max(1, Math.min(months, 360));
