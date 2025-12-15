@@ -1,5 +1,5 @@
 window.Translators = {
-  branches: {
+  branch: {
     "downtown financial center": 1,
     "midtown business branch": 2,
     "waterfront branch": 3,
@@ -65,7 +65,7 @@ window.Translators = {
     "Hannah Martinez": 12
   },
   _meta: {
-    branches: { synonyms: ["branch", "branches", "location", "office"] },
+    branch: { synonyms: ["branch", "branches", "location", "office"] },
     officer: { synonyms: ["officer", "officers", "rm", "relationship manager", "owner"] }
   }
 };
