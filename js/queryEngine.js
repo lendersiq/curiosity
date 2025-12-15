@@ -8,32 +8,64 @@ function buildNumericPredicate(cond) {
   if (!cond.field) return () => false;
 
   if (cond.op === "between") {
-    const min = cond.valueMin;
-    const max = cond.valueMax;
+    const min = Number(cond.valueMin);
+    const max = Number(cond.valueMax);
     return row => {
+      if (!row) return false;
+
+      // Resolve actual field key case-insensitively
+      let fieldKey = cond.field;
+      if (!(fieldKey in row)) {
+        const lowerField = String(cond.field).toLowerCase();
+        const matchedKey = Object.keys(row).find(
+          k => k.toLowerCase() === lowerField
+        );
+        if (!matchedKey) return false;
+        fieldKey = matchedKey;
+      }
+
+      const rawValue = row[fieldKey];
       const v = Number(
-        String(row[cond.field] ?? "").replace(/[^0-9.\-]/g, "")
+        String(rawValue ?? "").replace(/[^0-9.\-]/g, "")
       );
-      if (Number.isNaN(v)) return false;
+      if (Number.isNaN(v) || Number.isNaN(min) || Number.isNaN(max)) return false;
       return v >= min && v <= max;
     };
   }
 
   if (cond.op === "=" || cond.op === ">" || cond.op === "<" || cond.op === ">=" || cond.op === "<=") {
-    const value = cond.value;
+    const target = Number(cond.value);
     return row => {
-      const v = Number(
-        String(row[cond.field] ?? "").replace(/[^0-9.\-]/g, "")
-      );
-      if (Number.isNaN(v)) return false;
-      switch (cond.op) {
-        case "=": return v === value;
-        case ">": return v > value;
-        case "<": return v < value;
-        case ">=": return v >= value;
-        case "<=": return v <= value;
-        default: return false;
+      if (!row) return false;
+
+      // Resolve actual field key case-insensitively
+      let fieldKey = cond.field;
+      if (!(fieldKey in row)) {
+        const lowerField = String(cond.field).toLowerCase();
+        const matchedKey = Object.keys(row).find(
+          k => k.toLowerCase() === lowerField
+        );
+        if (!matchedKey) return false;
+        fieldKey = matchedKey;
       }
+
+      const rawValue = row[fieldKey];
+      const v = Number(
+        String(rawValue ?? "").replace(/[^0-9.\-]/g, "")
+      );
+      if (Number.isNaN(v) || Number.isNaN(target)) return false;
+
+      let result = false;
+      switch (cond.op) {
+        case "=":  result = (v === target); break;
+        case ">":  result = (v >  target); break;
+        case "<":  result = (v <  target); break;
+        case ">=": result = (v >= target); break;
+        case "<=": result = (v <= target); break;
+        default:   result = false; break;
+      }
+      console.log(`🔍 Predicate: field=${cond.field} (resolved=${fieldKey}), rawValue=${rawValue} (${typeof rawValue}), processed=${v}, target=${target} (${typeof cond.value}), op=${cond.op}, result=${result}`);
+      return result;
     };
   }
 
@@ -143,12 +175,17 @@ async function executeQueryPlan(queryPlan, sourcesMeta) {
   }
 
   const predicates = queryPlan.conditions.map(buildPredicate);
+  console.log(`🔍 Built ${predicates.length} predicates for ${queryPlan.conditions.length} conditions`);
   const logic = queryPlan.logicalOp || "AND";
 
   const resultRows = [];
 
   // Filter rows using array operations
+  console.log(`🔄 Starting to filter ${allRows.length} rows with ${predicates.length} predicates`);
+  let rowCount = 0;
   for (const row of allRows) {
+    rowCount++;
+    if (rowCount <= 3) console.log(`🔄 Processing row ${rowCount}:`, typeof row, row ? Object.keys(row).slice(0, 3) : 'null');
     let keep = true;
     if (logic === "AND") {
       keep = predicates.every(fn => fn(row));
@@ -452,13 +489,13 @@ async function validateQueryPlan(plan, sourcesMeta = null) {
         confidence = Math.min(confidence, 0.8);
       }
 
-      // Validate field existence if sourcesMeta is available
-      if (sourcesMeta && condition.concept && plan.targetEntities) {
+      // Validate field existence if sourcesMeta is available (skip function-based conditions)
+      if (sourcesMeta && condition.concept && plan.targetEntities && !condition.function) {
         let fieldFound = false;
         for (const entity of plan.targetEntities) {
           const source = pickSourceForEntity(entity, sourcesMeta);
           if (source) {
-            // Try to map the condition to actual fields
+            // Try to map the condition to actual fields (don't modify the plan)
             try {
               const mappedConditions = await window.ConceptMapper.mapConceptsToFields(
                 source.sourceId,
@@ -489,8 +526,8 @@ async function validateQueryPlan(plan, sourcesMeta = null) {
   }
 
   // Reduce confidence if we have sourcesMeta but couldn't validate fields
-  if (sourcesMeta && confidence > 0.8) {
-    confidence = 0.8; // Leave some room for execution-time issues
+  if (sourcesMeta && confidence > 0.9) {
+    confidence = 0.9; // Leave some room for execution-time issues
   }
 
   return {

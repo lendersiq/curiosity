@@ -22,6 +22,15 @@ const NOUN_ADJUNCT_PATTERNS = [
   "number", "id", "code", "key", "reference", "identifier"
 ];
 
+// Simple plural stemmer for translator keys
+function stemPlural(word) {
+  // Handle common plural endings in reverse order of specificity
+  if (word.endsWith('ies')) return word.slice(0, -3) + 'y';  // companies -> company
+  if (word.endsWith('es')) return word.slice(0, -2);        // branches -> branch, classes -> class
+  if (word.endsWith('s')) return word.slice(0, -1);         // officers -> officer, accounts -> account
+  return word;                                              // singular words unchanged
+}
+
 function tokenizeFieldName(name) {
   return name
     .replace(/[_\-]/g, " ")
@@ -119,6 +128,50 @@ async function mapConceptsToFields(sourceId, conditions) {
   if (!schema || !schema.fields || !schema.fields.length) return conditions;
 
   return conditions.map(cond => {
+    // Skip function-based conditions as they don't need field mapping
+    if (cond.function) return cond;
+
+    // Handle translated conditions using semantic groups
+    if (cond.translated && cond.translationSource && window.Translators && window.Translators._meta) {
+      console.log(`🔄 Mapping translated condition: ${cond.concept} from ${cond.translationSource}`);
+      const stemmedSource = stemPlural(cond.translationSource);
+      console.log(`🔄 Stemmed source: ${stemmedSource}`);
+      const translatorMeta = window.Translators._meta[stemmedSource];
+
+      if (translatorMeta) {
+        console.log(`✅ Found translator meta for ${stemmedSource}`);
+        // Find semantic group containing the stemmed source
+        const semanticGroup = SEMANTIC_GROUPS.find(group =>
+          group.some(term => term.toLowerCase() === stemmedSource.toLowerCase())
+        );
+
+        if (semanticGroup) {
+          console.log(`✅ Found semantic group:`, semanticGroup);
+          // Use the primary field name from the semantic group
+          // For branches: "Branch", for officers: "Owner_Code", etc.
+          const primaryField = semanticGroup.find(fieldName =>
+            schema.fields.some(f => f.name.toLowerCase() === fieldName.toLowerCase())
+          );
+
+          if (primaryField) {
+            console.log(`✅ Found primary field: ${primaryField}`);
+            const actualField = schema.fields.find(f =>
+              f.name.toLowerCase() === primaryField.toLowerCase()
+            );
+            if (actualField) {
+              console.log(`✅ Mapped to actual field: ${actualField.id}`);
+              const result = { ...cond, field: actualField.id.toLowerCase() };
+              console.log(`✅ Returning mapped condition:`, result);
+              return result;
+            }
+          }
+        }
+      }
+      console.log(`❌ No mapping found for translated condition`);
+      // If no mapping found, return condition as-is (don't break the flow)
+      return cond;
+    }
+
     if (!cond.concept) return cond;
 
     console.log(`Mapping concept "${cond.concept}" for source, ${schema.fields.length} fields available`);

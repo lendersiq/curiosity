@@ -275,13 +275,12 @@
       if (functionCall.functionName === columnName && functionCall.library && window.FunctionLibrary) {
         const lib = window.FunctionLibrary[functionCall.library];
         const func = lib && lib.functions && lib.functions[functionCall.functionName];
-        if (func) {
-          if (func.returnType === 'currency') {
-            return { dataType: 'currency', roleGuess: 'field', returnType: func.returnType };
-          }
-          if (func.returnType === 'percentage') {
-            return { dataType: 'number', roleGuess: 'field', returnType: func.returnType };
-          }
+        if (func && func.returnType) {
+          return {
+            dataType: func.returnType === 'percentage' ? 'number' : func.returnType,
+            roleGuess: 'field',
+            returnType: func.returnType
+          };
         }
       }
     }
@@ -647,6 +646,12 @@
     console.log('window.DB.initDB:', window.DB?.initDB);
     await window.DB.initDB();
     console.log('✅ DB initialized');
+
+    console.log('🔄 Clearing function registry keyword cache...');
+    if (window.FunctionRegistry?.clearKeywordCache) {
+      window.FunctionRegistry.clearKeywordCache();
+      console.log('✅ Function registry cache cleared');
+    }
 
     console.log('🔍 Getting DOM elements...');
 
@@ -1347,8 +1352,20 @@
 
           planCopy.uniqueId = uniqueId;
           planCopy.columns = columns;
+        }
+
+        // Separate function-based conditions from regular conditions BEFORE concept mapping
+        const originalConditions = planCopy.conditions;
+        const regularConditions = originalConditions.filter(c => !c.function);
+        const functionConditions = originalConditions.filter(c => c.function);
+
+        // Temporarily replace conditions with only regular conditions for concept mapping and initial query execution
+        planCopy.conditions = regularConditions;
+
+        if (planCopy.targetEntities.length > 1 || (planCopy.uniqueId && planCopy.columns)) {
+          // Multi-source query logic here
         } else if (planCopy.targetEntities.length && sourcesMeta.length) {
-          // Single source: map conditions
+          // Single source: map regular conditions only
           const mainEntity = planCopy.targetEntities[0];
           const source = window.QueryEngine.pickSourceForEntity(mainEntity, sourcesMeta);
           if (source) {
@@ -1359,19 +1376,35 @@
           }
         }
 
+        // Keep a copy of the mapped regular conditions for execution
+        const mappedRegularConditions = planCopy.conditions;
+
+        // Restore all conditions for display, preserving field mappings from concept mapping
+        // Regular conditions now have field mappings, function conditions remain as-is
+        planCopy.conditions = [
+          ...mappedRegularConditions, // mapped regular conditions with field properties
+          ...functionConditions       // function conditions (already have necessary properties)
+        ];
+
+        console.log('Final plan conditions:', planCopy.conditions);
+        console.log('Final plan conditions detailed:', JSON.stringify(planCopy.conditions, null, 2));
         planPre.textContent = JSON.stringify(planCopy, null, 2);
+
+        // For execution, use only the mapped regular conditions (function conditions handled separately)
+        planCopy.conditions = mappedRegularConditions;
 
         const result = await window.QueryEngine.executeQueryPlan(planCopy, sourcesMeta);
         currentRows = result.rows;
-        
+
         // Ensure grouping by uniqueID if we have multiple sources or need grouping
         // This should already be handled by executeQueryPlan, but let's verify
         if (result.rows.length > 0 && !result.uniqueId) {
           result.uniqueId = planCopy.uniqueId || await window.QueryEngine.findUniqueIdentifierField(result.usedSources || []);
         }
-        
+
         // Handle function calls (e.g., "average balance of loans")
         if (planCopy.functionCall && result.rows.length > 0 && result.usedSources && result.usedSources.length > 0) {
+          console.log(`🔧 Executing function ${planCopy.functionCall.functionName} on ${result.rows.length} rows from source ${result.usedSources[0].name}`);
           const source = result.usedSources[0];
           const library = window.FunctionLibrary[planCopy.functionCall.library];
           if (library && library.functions[planCopy.functionCall.functionName]) {
@@ -1385,7 +1418,7 @@
               source.sourceId,
               functionInfo
             );
-            
+
             // Get parameter names for column headers
             const paramNames = window.FunctionRegistry.getFunctionParameters(functionInfo);
             const resultColumnName = planCopy.functionCall.functionName.replace(/([A-Z])/g, ' $1').trim();
@@ -1408,18 +1441,21 @@
             const enrichedRows = [];
             for (const row of result.rows) {
               const enrichedRow = { ...row };
-              
+
               // Execute function on main row
               const funcResult = window.FunctionRegistry.executeFunctionOnRow(
                 row,
                 functionInfo,
                 fieldMapping
               );
-              
+
               if (funcResult != null) {
                 enrichedRow[resultColumnName] = funcResult;
+                console.log(`🔢 Function result for row: ${funcResult} (type: ${typeof funcResult})`);
+              } else {
+                console.log(`❌ Function returned null/undefined for row`);
               }
-              
+
               // If row has sub-rows (aggregated), apply function to sub-rows too
               if (row._subRows && row._subRows.length > 0) {
                 enrichedRow._subRows = row._subRows.map(subRow => {
@@ -1435,17 +1471,45 @@
                   return enrichedSubRow;
                 });
               }
-              
+
               enrichedRows.push(enrichedRow);
             }
-            
-            // Update result rows and render as table
-            result.rows = enrichedRows;
+
+            // Apply function-based conditions as post-filter
+            let filteredRows = enrichedRows;
+            if (functionConditions.length > 0) {
+              filteredRows = enrichedRows.filter(row => {
+                return functionConditions.every(condition => {
+                  const value = row[resultColumnName];
+                  if (value == null) return false;
+
+                  const numValue = Number(value);
+                  const conditionValue = Number(condition.value);
+
+                  if (value == null || isNaN(numValue)) return false;
+
+                  let result = false;
+                  switch (condition.op) {
+                    case '>': result = numValue > conditionValue; break;
+                    case '<': result = numValue < conditionValue; break;
+                    case '>=': result = numValue >= conditionValue; break;
+                    case '<=': result = numValue <= conditionValue; break;
+                    case '=': result = numValue === conditionValue; break;
+                    default: result = true; break;
+                  }
+
+                  return result;
+                });
+              });
+            }
+
+            // Update result with enriched and filtered rows
+            result.rows = filteredRows;
             result.uniqueId = uniqueId;
             planCopy.columns = functionColumns;
             planCopy.uniqueId = uniqueId;
             planCopy.valuationFields = [resultColumnName];
-            
+
             // Continue to normal rendering with enriched rows
           }
         }

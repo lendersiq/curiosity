@@ -13,11 +13,32 @@ const stopWords = new Set([
 let cachedKeywordEntries = null;
 
 function normalizeKeywordsFromDescription(desc) {
-  return desc
+  const keywords = desc
     .toLowerCase()
     .split(/\s+/)
     .map(k => k.replace(/[^a-z0-9]/g, ''))
     .filter(k => k.length >= 3 && !stopWords.has(k));
+
+  // Add stemmed/plural variations for better matching
+  const expanded = new Set(keywords);
+  for (const kw of keywords) {
+    // Add singular/plural variations
+    if (kw.endsWith('s') && kw.length > 3) {
+      expanded.add(kw.slice(0, -1)); // profits -> profit
+    } else if (kw.length > 3) {
+      expanded.add(kw + 's'); // profit -> profits
+    }
+
+    // Add common synonyms
+    if (kw === 'profit') expanded.add('earnings');
+    if (kw === 'earnings') expanded.add('profit');
+    if (kw === 'interest') expanded.add('rate');
+    if (kw === 'rate') expanded.add('interest');
+    if (kw === 'balance') expanded.add('principal');
+    if (kw === 'principal') expanded.add('balance');
+  }
+
+  return Array.from(expanded);
 }
 
 function buildKeywordEntries() {
@@ -78,18 +99,35 @@ function getKeywordEntries() {
   return cachedKeywordEntries;
 }
 
+function clearKeywordCache() {
+  cachedKeywordEntries = null;
+}
+
 /**
  * Find the best matching function for a prompt using keyword/tag scoring.
+ * Now includes entity compatibility checking.
  */
-function findBestFunctionByPrompt(promptText) {
+function findBestFunctionByPrompt(promptText, targetEntities = []) {
   if (!promptText || !window.FunctionLibrary) return null;
   const lowerPrompt = promptText.toLowerCase();
-  const tokens = lowerPrompt
+
+  // Generate tokens with variations for better matching
+  const baseTokens = lowerPrompt
     .split(/\s+/)
     .map(t => t.replace(/[^a-z0-9]/g, ''))
     .filter(t => t.length >= 3 && !stopWords.has(t));
 
-  if (tokens.length === 0) return null;
+  const tokens = new Set(baseTokens);
+  // Add stemmed variations
+  for (const t of baseTokens) {
+    if (t.endsWith('s') && t.length > 3) {
+      tokens.add(t.slice(0, -1)); // profits -> profit
+    } else if (t.length > 3) {
+      tokens.add(t + 's'); // profit -> profits
+    }
+  }
+
+  if (tokens.size === 0) return null;
 
   const entries = getKeywordEntries();
   let best = null;
@@ -97,6 +135,20 @@ function findBestFunctionByPrompt(promptText) {
 
   for (const entry of entries) {
     let score = 0;
+    const func = entry.function;
+
+    // Check entity compatibility if targetEntities provided
+    if (targetEntities.length > 0 && func.entities && Array.isArray(func.entities)) {
+      const functionEntities = func.entities;
+      const hasCommonEntities = functionEntities.some(funcEntity =>
+        targetEntities.some(targetEntity =>
+          funcEntity.toLowerCase() === targetEntity.toLowerCase()
+        )
+      );
+
+      // Skip functions that don't match target entities
+      if (!hasCommonEntities) continue;
+    }
 
     // Exact keyword phrase hits (keywords may include spaces)
     if (entry.keywords) {
@@ -114,6 +166,14 @@ function findBestFunctionByPrompt(promptText) {
       else if (entry.descriptionLower && entry.descriptionLower.includes(t)) score += 1;
     }
 
+    // Boost functions whose name contains key query tokens
+    const funcNameLower = entry.functionName.toLowerCase();
+    for (const t of tokens) {
+      if (funcNameLower.includes(t) && t.length > 3) {
+        score += 3; // Significant boost for name matches
+      }
+    }
+
     if (score > bestScore) {
       bestScore = score;
       best = entry;
@@ -123,7 +183,9 @@ function findBestFunctionByPrompt(promptText) {
   return bestScore > 0 ? {
     library: best.library,
     functionName: best.functionName,
-    function: best.function
+    function: best.function,
+    entities: best.function.entities,
+    returnType: best.function.returnType
   } : null;
 }
 
@@ -254,5 +316,6 @@ window.FunctionRegistry = {
   findBestFunctionByPrompt,
   getFunctionParameters,
   mapFunctionParameters,
-  executeFunctionOnRow
+  executeFunctionOnRow,
+  clearKeywordCache
 };

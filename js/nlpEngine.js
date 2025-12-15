@@ -375,13 +375,44 @@ function parsePrompt(prompt) {
     const isMultiEntityQuery = finalTargetEntities.length > 1;
 
     if (hasFunctionIntent && !isMultiEntityQuery) {
-      const found = window.FunctionRegistry.findBestFunctionByPrompt(lowerText);
+      const found = window.FunctionRegistry.findBestFunctionByPrompt(lowerText, finalTargetEntities);
       if (found) {
         functionCall = {
           library: found.library,
           functionName: found.functionName,
-          description: found.function.description
+          description: found.function.description,
+          entities: found.entities,
+          returnType: found.returnType
         };
+
+        // If we have a function call and conditions, check if any conditions should apply to the function result
+        // instead of input fields. For example: "find loan profits over $250,000" should filter on loanProfit > 250000
+        if (conditions.length > 0 && functionCall) {
+          const functionName = functionCall.functionName.toLowerCase();
+          const functionKeywords = [functionName];
+
+          // Add common variations
+          if (functionName === 'loanprofit') functionKeywords.push('profit', 'profits');
+          if (functionName === 'averageprincipal') functionKeywords.push('average', 'principal', 'balance');
+
+          // Check if any condition's context contains function-related keywords
+          conditions.forEach(condition => {
+            const conditionText = condition._context || '';
+            const hasFunctionKeyword = functionKeywords.some(kw =>
+              conditionText.toLowerCase().includes(kw) ||
+              lowerText.includes(kw + ' over') ||
+              lowerText.includes(kw + ' above') ||
+              lowerText.includes(kw + ' greater')
+            );
+
+            if (hasFunctionKeyword) {
+              // Update condition to apply to the function result
+              condition.concept = functionCall.functionName;
+              condition.function = functionCall.functionName;
+              console.log(`Updated condition to apply to function result: ${condition.concept} ${condition.op} ${condition.value}`);
+            }
+          });
+        }
       }
     }
   }
@@ -407,13 +438,17 @@ function parsePrompt(prompt) {
 function applyTranslatorsToConditions(conditions) {
   if (!Array.isArray(conditions) || !window.Translators) return conditions;
 
+  console.log('🔄 Applying translators to conditions:', conditions);
+
   const isHelper = key => key === '_meta' || key === 'registerTranslator';
   const metaRoot = window.Translators._meta || {};
 
   // Build case-insensitive lookups for all translator maps
   const lookups = {};
+  console.log('🔧 Building translator lookups from:', Object.keys(window.Translators));
   for (const [type, map] of Object.entries(window.Translators)) {
     if (isHelper(type) || !map) continue;
+    console.log(`🔧 Building lookup for translator ${type}:`, Object.keys(map));
     const lu = {};
     for (const [k, v] of Object.entries(map)) {
       if (k == null) continue;
@@ -421,7 +456,9 @@ function applyTranslatorsToConditions(conditions) {
       lu[k.toLowerCase()] = v;
     }
     lookups[type] = lu;
+    console.log(`🔧 Lookup for ${type} has ${Object.keys(lu).length} entries`);
   }
+  console.log('🔧 Final lookups:', Object.keys(lookups));
 
   return conditions.map(cond => {
     if (!cond || cond.value == null || cond.concept == null) return cond;
@@ -434,7 +471,10 @@ function applyTranslatorsToConditions(conditions) {
     for (const [type, lu] of Object.entries(lookups)) {
       const meta = metaRoot[type] || {};
       const synonyms = [type].concat(meta.synonyms || []).map(s => s.toLowerCase());
+      console.log(`🔍 Checking translator ${type} with synonyms:`, synonyms, `for concept: ${condConcept}`);
       if (!synonyms.includes(condConcept)) continue;
+
+      console.log(`✅ Concept matches translator ${type}`);
 
       // Try variations: raw string, lower string, and string + each synonym (e.g., "brookside branch")
       const variations = new Set([valueKey, valueStr]);
@@ -443,23 +483,28 @@ function applyTranslatorsToConditions(conditions) {
         variations.add(`${valueStr} ${syn}`);
       });
 
+      console.log(`🔍 Trying variations for value "${valueStr}":`, Array.from(variations));
+
       let mapped;
       for (const variant of variations) {
         if (lu[variant] !== undefined) {
           mapped = lu[variant];
+          console.log(`✅ Found translation: "${variant}" -> ${mapped}`);
           break;
         }
       }
 
       if (mapped !== undefined) {
         const inferredValueType = typeof mapped === 'number' && !Number.isNaN(mapped) ? 'number' : 'string';
-        return {
+        const translatedCond = {
           ...cond,
           value: mapped,
           valueType: inferredValueType,
           translated: true,
           translationSource: type
         };
+        console.log(`🎯 Translated condition:`, translatedCond);
+        return translatedCond;
       }
     }
 
@@ -1107,16 +1152,21 @@ function extractDateConditions(text) {
 }
 
 function guessConcept(fragment) {
-  // Use the new AI-powered concept resolution system
-  const result = intelligentConceptResolution(fragment, {
-    isCondition: true, // This is called from condition parsing
-    originalQuery: fragment
-  });
+  try {
+    // Use the new AI-powered concept resolution system
+    const result = intelligentConceptResolution(fragment, {
+      isCondition: true, // This is called from condition parsing
+      originalQuery: fragment
+    });
 
-  // Log the AI reasoning for debugging
-  console.log(`AI Concept Resolution for "${fragment}":`, result);
+    // Log the AI reasoning for debugging
+    console.log(`AI Concept Resolution for "${fragment}":`, result);
 
-  return result.concept;
+    return result.concept || 'value'; // Default to 'value' if no concept found
+  } catch (error) {
+    console.error('Error in guessConcept:', error);
+    return 'value'; // Default fallback
+  }
 }
 
 function guessDateConcept(fragment) {
