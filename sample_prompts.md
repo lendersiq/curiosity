@@ -56,6 +56,12 @@ This document contains examples of natural language queries you can use with the
 "find loans with high risk ratings"
 ```
 
+**💡 Domain-Specific Synonym Mapping:**
+In banking context, when a loan is "closed" (signed by the borrower), it happens on the same day the loan is "opened". Therefore, for loan-only queries, the system automatically maps "closed" to "opened":
+- ✅ `"show loans closed in the last 2 years"` → interpreted as `"show loans opened in the last 2 years"`
+- ✅ `"find loans closed after 2023"` → interpreted as `"find loans opened after 2023"`
+- ⚠️ This mapping only applies to loan-only queries (not multi-entity queries like "loans and checking accounts")
+
 ### Checking Account Queries
 ```
 "show checking balances"
