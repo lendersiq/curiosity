@@ -193,15 +193,6 @@ async function importFiles(fileList) {
     const sourceId = file.name.replace(/[^a-zA-Z0-9_-]/g, "_") + "_" + Date.now();
     console.log(`🆔 Source ID: ${sourceId}`);
 
-    console.log(`💾 Ensuring rows store for ${sourceId}...`);
-    await window.DB.ensureRowsStore(sourceId);
-    console.log(`✅ Rows store ensured`);
-
-    // Get fresh DB reference after ensureRowsStore (it may have closed/reopened)
-    console.log(`🔌 Getting DB reference...`);
-    const db = await window.DB.getDB();
-    console.log(`✅ DB reference obtained`);
-
     // Build schema from sample rows
     console.log(`🏗️ Building schema from ${parsed.rows.length} rows...`);
     const sampleRows = parsed.rows.slice(0, 100);
@@ -229,14 +220,9 @@ async function importFiles(fileList) {
       }
     }
 
-    // Create separate transaction for metadata
+    // Store metadata using direct API
     console.log(`💾 Storing metadata for source ${sourceId}...`);
-    const txSources = db.transaction(["sources", "schemas"], "readwrite");
-    const sourcesStore = txSources.objectStore("sources");
-    const schemasStore = txSources.objectStore("schemas");
-
-    console.log(`📝 Storing source info...`);
-    sourcesStore.put({
+    window.DB.putSource({
       sourceId,
       name: file.name.replace(/\.[^.]+$/, ""),
       originalFileName: file.name,
@@ -244,71 +230,19 @@ async function importFiles(fileList) {
     });
 
     console.log(`📋 Storing schema...`);
-    schemasStore.put({
+    window.DB.putSchema(sourceId, {
       sourceId,
       fields
-    });
-
-    // Wait for metadata transaction to complete before moving to rows
-    console.log(`⏳ Waiting for metadata transaction to complete...`);
-    await new Promise((resolve, reject) => {
-      txSources.oncomplete = () => {
-        console.log(`✅ Metadata transaction completed`);
-        resolve();
-      };
-      txSources.onerror = () => {
-        console.error(`❌ Metadata transaction failed:`, txSources.error);
-        reject(txSources.error);
-      };
     });
 
     console.log(`✅ Adding source ${sourceId} to imported list`);
     imported.push({ sourceId, fields, name: file.name });
 
-    // Save rows in batches to avoid transaction timeout
-    // Session storage operations are fast and don't timeout
-    // We'll process in batches of 1000 rows per transaction
-    const rowsStoreName = `rows_${sourceId}`;
-    const batchSize = 1000;
+    // Store all rows at once using direct API (no batching needed for in-memory)
     const totalRows = parsed.rows.length;
-
-    console.log(`💾 Storing ${totalRows} rows in batches of ${batchSize}...`);
-
-    for (let startIndex = 0; startIndex < totalRows; startIndex += batchSize) {
-      const endIndex = Math.min(startIndex + batchSize, totalRows);
-      const batch = parsed.rows.slice(startIndex, endIndex);
-      const batchNumber = Math.floor(startIndex / batchSize) + 1;
-      const totalBatches = Math.ceil(totalRows / batchSize);
-
-      console.log(`📦 Processing batch ${batchNumber}/${totalBatches}: rows ${startIndex + 1}-${endIndex}`);
-
-      // Create a fresh transaction for each batch
-      const db = await window.DB.getDB();
-      const txRows = db.transaction(rowsStoreName, "readwrite");
-      const rowsStore = txRows.objectStore(rowsStoreName);
-
-      await new Promise((resolve, reject) => {
-        let index = 0;
-        function addNext() {
-          if (index >= batch.length) {
-            console.log(`✅ Batch ${batchNumber} completed`);
-            txRows.oncomplete = () => resolve();
-            txRows.onerror = () => reject(txRows.error);
-            return;
-          }
-          const req = rowsStore.add(batch[index]);
-          index++;
-          if (index % 100 === 0) {
-            console.log(`📝 Batch ${batchNumber}: processed ${index}/${batch.length} rows`);
-          }
-          req.onsuccess = () => {
-            addNext();
-          };
-          req.onerror = () => reject(req.error);
-        }
-        addNext();
-      });
-    }
+    console.log(`💾 Storing ${totalRows} rows...`);
+    window.DB.addRows(sourceId, parsed.rows);
+    console.log(`✅ All rows stored`);
 
     console.log(`🎉 File ${file.name} processing completed`);
   }
@@ -406,67 +340,18 @@ function formatBytes(bytes) {
 }
 
 async function listSources() {
-  const db = await window.DB.getDB();
-  const tx = db.transaction("sources", "readonly");
-  const store = tx.objectStore("sources");
-  const req = store.getAll();
-  const result = await new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
-  return result;
+  return window.DB.getAllSources();
 }
 
 async function getSchema(sourceId) {
-  const db = await window.DB.getDB();
-  const tx = db.transaction("schemas", "readonly");
-  const store = tx.objectStore("schemas");
-  const req = store.get(sourceId);
-  const result = await new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-  return result;
+  return window.DB.getSchema(sourceId);
 }
 
 async function deleteSource(sourceId) {
-  const db = await window.DB.getDB();
-  const DB_NAME = "PrivateAIDB";
-  
-  // Delete from sources store
-  const txSources = db.transaction("sources", "readwrite");
-  const sourcesStore = txSources.objectStore("sources");
-  await new Promise((resolve, reject) => {
-    const req = sourcesStore.delete(sourceId);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-  
-  // Delete from schemas store
-  const txSchemas = db.transaction("schemas", "readwrite");
-  const schemasStore = txSchemas.objectStore("schemas");
-  await new Promise((resolve, reject) => {
-    const req = schemasStore.delete(sourceId);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-  
-  // Note: Deleting object stores requires DB upgrade, which is complex
-  // For now, we'll just clear the rows store
-  if (db.objectStoreNames.contains(`rows_${sourceId}`)) {
-    const txRows = db.transaction(`rows_${sourceId}`, "readwrite");
-    const rowsStore = txRows.objectStore(`rows_${sourceId}`);
-    await new Promise((resolve, reject) => {
-      const req = rowsStore.clear();
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
-  }
-  
-  await new Promise((resolve, reject) => {
-    txSources.oncomplete = () => resolve();
-    txSources.onerror = () => reject(txSources.error);
-  });
+  // Delete source, schema, and rows using direct API
+  window.DB.deleteSource(sourceId);
+  window.DB.deleteSchema(sourceId);
+  window.DB.deleteRows(sourceId);
 }
 
 async function updateSource(sourceId, file) {
@@ -486,15 +371,6 @@ async function updateSource(sourceId, file) {
     throw new Error("Unsupported file type");
   }
   
-  await window.DB.ensureRowsStore(sourceId);
-  
-  // Get fresh DB reference after ensureRowsStore (it may have closed/reopened)
-  const db = await window.DB.getDB();
-  
-  const txSources = db.transaction(["sources", "schemas"], "readwrite");
-  const sourcesStore = txSources.objectStore("sources");
-  const schemasStore = txSources.objectStore("schemas");
-  
   // Build schema from sample rows
   const sampleRows = parsed.rows.slice(0, 100);
   const fields = parsed.headers.map(h => {
@@ -508,69 +384,23 @@ async function updateSource(sourceId, file) {
     };
   });
   
-  sourcesStore.put({
+  // Update source metadata using direct API
+  window.DB.putSource({
     sourceId,
     name: file.name.replace(/\.[^.]+$/, ""),
     originalFileName: file.name,
     lastUpdated: new Date().toISOString()
   });
   
-  schemasStore.put({
+  // Update schema using direct API
+  window.DB.putSchema(sourceId, {
     sourceId,
     fields
   });
   
-  // Wait for metadata transaction to complete
-  await new Promise((resolve, reject) => {
-    txSources.oncomplete = () => resolve();
-    txSources.onerror = () => reject(txSources.error);
-  });
-  
-  // Clear and update rows in separate transaction
-  const rowsStoreName = `rows_${sourceId}`;
-  
-  // Clear existing rows in a single transaction
-  const txClear = db.transaction(rowsStoreName, "readwrite");
-  const clearStore = txClear.objectStore(rowsStoreName);
-  await new Promise((resolve, reject) => {
-    const req = clearStore.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-    txClear.oncomplete = () => resolve();
-    txClear.onerror = () => reject(txClear.error);
-  });
-  
-  // Add new rows in batches to avoid transaction timeout
-  // IndexedDB transactions can timeout if they take too long
-  const batchSize = 1000;
-  const totalRows = parsed.rows.length;
-  
-  for (let startIndex = 0; startIndex < totalRows; startIndex += batchSize) {
-    const endIndex = Math.min(startIndex + batchSize, totalRows);
-    const batch = parsed.rows.slice(startIndex, endIndex);
-    
-    // Create a fresh transaction for each batch
-    const txRows = db.transaction(rowsStoreName, "readwrite");
-    const rowsStore = txRows.objectStore(rowsStoreName);
-    
-    await new Promise((resolve, reject) => {
-      let index = 0;
-      function addNext() {
-        if (index >= batch.length) {
-          txRows.oncomplete = () => resolve();
-          txRows.onerror = () => reject(txRows.error);
-          return;
-        }
-        const req = rowsStore.add(batch[index]);
-        index++;
-        req.onsuccess = () => {
-          addNext();
-        };
-        req.onerror = () => reject(req.error);
-      }
-      addNext();
-    });
-  }
+  // Clear existing rows and add new ones using direct API
+  window.DB.clearRows(sourceId);
+  window.DB.addRows(sourceId, parsed.rows);
 
   return { sourceId, fields, name: file.name };
 }

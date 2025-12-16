@@ -352,6 +352,23 @@ function parsePrompt(prompt) {
   // Convert to final format (backward compatibility)
   const finalTargetEntities = targetEntities.map(match => match.entity);
 
+  // Domain-specific synonym mapping: For loans/mortgages, "closed" = "opened"
+  // In banking context, a loan is "closed" (signed) on the same day it's "opened"
+  const loanRelatedEntities = ['loans', 'loan', 'mortgage', 'mortgages'];
+  const isLoanOnlyQuery = finalTargetEntities.length === 1 && 
+                          loanRelatedEntities.includes(finalTargetEntities[0].toLowerCase());
+  
+  if (isLoanOnlyQuery) {
+    // Map "close"/"closed" concepts to "open" for loan-only queries
+    translatedConditions.forEach(condition => {
+      if (condition.concept === 'close' || condition.concept === 'closed') {
+        condition.concept = 'open';
+        condition._originalConcept = 'close'; // Keep original for debugging
+        console.log(`🔄 Mapped "close" to "open" for loan query: ${condition.concept} ${condition.op}`);
+      }
+    });
+  }
+
   // Detect function calls dynamically from function libraries (keyword-driven)
   // Skip function detection if we already found a statistical operation
   let functionCall = null;
@@ -1102,6 +1119,26 @@ function parseConditionFragment(fragment) {
     conds.push({
       concept: guessDateConcept(fragment),
       op: "after",
+      relativeTime: {
+        unit,
+        value
+      },
+      valueType: "date"
+    });
+  }
+
+  // "within X months/years" - means "in the next X time period" (before X time from now)
+  const withinMatch = fragment.match(/within\s+(\d+)\s+(month|months|year|years|day|days)/i);
+  if (withinMatch) {
+    const value = Number(withinMatch[1]);
+    const unitWord = withinMatch[2];
+    let unit = "months";
+    if (unitWord.startsWith("year")) unit = "years";
+    if (unitWord.startsWith("day")) unit = "days";
+
+    conds.push({
+      concept: guessDateConcept(fragment),
+      op: "before", // "within 2 years" means "before 2 years from now"
       relativeTime: {
         unit,
         value

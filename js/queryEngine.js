@@ -80,7 +80,18 @@ function buildDatePredicate(cond) {
     if (isNaN(boundary.getTime())) return () => false;
 
     return row => {
-      const d = new Date(row[cond.field]);
+      // Resolve actual field key case-insensitively
+      let fieldKey = cond.field;
+      if (!(fieldKey in row)) {
+        const lowerField = String(cond.field).toLowerCase();
+        const matchedKey = Object.keys(row).find(
+          k => k.toLowerCase() === lowerField
+        );
+        if (!matchedKey) return false;
+        fieldKey = matchedKey;
+      }
+
+      const d = new Date(row[fieldKey]);
       if (isNaN(d.getTime())) return false;
       if (cond.op === "after") return d >= boundary;
       if (cond.op === "before") return d <= boundary;
@@ -94,16 +105,42 @@ function buildDatePredicate(cond) {
   const boundary = new Date(now);
 
   const { unit, value } = cond.relativeTime;
-  if (unit === "months") {
-    boundary.setMonth(boundary.getMonth() - value);
-  } else if (unit === "years") {
-    boundary.setFullYear(boundary.getFullYear() - value);
-  } else if (unit === "days") {
-    boundary.setDate(boundary.getDate() - value);
+  
+  // For "after" (e.g., "last X years"), subtract time (go back in time)
+  // For "before" (e.g., "within X years"), add time (go forward in time)
+  if (cond.op === "after") {
+    // "last X years" → date >= (now - X)
+    if (unit === "months") {
+      boundary.setMonth(boundary.getMonth() - value);
+    } else if (unit === "years") {
+      boundary.setFullYear(boundary.getFullYear() - value);
+    } else if (unit === "days") {
+      boundary.setDate(boundary.getDate() - value);
+    }
+  } else if (cond.op === "before") {
+    // "within X years" → date <= (now + X)
+    if (unit === "months") {
+      boundary.setMonth(boundary.getMonth() + value);
+    } else if (unit === "years") {
+      boundary.setFullYear(boundary.getFullYear() + value);
+    } else if (unit === "days") {
+      boundary.setDate(boundary.getDate() + value);
+    }
   }
 
   return row => {
-    const d = new Date(row[cond.field]);
+    // Resolve actual field key case-insensitively
+    let fieldKey = cond.field;
+    if (!(fieldKey in row)) {
+      const lowerField = String(cond.field).toLowerCase();
+      const matchedKey = Object.keys(row).find(
+        k => k.toLowerCase() === lowerField
+      );
+      if (!matchedKey) return false;
+      fieldKey = matchedKey;
+    }
+
+    const d = new Date(row[fieldKey]);
     if (isNaN(d.getTime())) return false;
     if (cond.op === "after") return d >= boundary;
     if (cond.op === "before") return d <= boundary;
@@ -118,8 +155,8 @@ function buildPredicate(cond) {
 }
 
 async function executeQueryFromSource(queryPlan, source, conditions) {
-  // Load all rows from session storage
-  const allRows = await window.DB.getAllRows(source.sourceId);
+  // Load all rows from in-memory storage
+  const allRows = window.DB.getAllRows(source.sourceId);
   if (allRows.length === 0) {
     return [];
   }
@@ -168,8 +205,8 @@ async function executeQueryPlan(queryPlan, sourcesMeta) {
   const candidateSource = pickSourceForEntity(mainEntity, sourcesMeta);
   if (!candidateSource) return { rows: [], usedSource: null, usedSources: [] };
 
-  // Load all rows from session storage
-  const allRows = await window.DB.getAllRows(candidateSource.sourceId);
+  // Load all rows from in-memory storage
+  const allRows = window.DB.getAllRows(candidateSource.sourceId);
   if (allRows.length === 0) {
     return { rows: [], usedSource: null, usedSources: [] };
   }
@@ -285,7 +322,19 @@ async function combineMultiSourceResults(sourceResults, uniqueId, columns, valua
     for (const field of valuationFields) {
       let sum = 0;
       for (const row of group._rows) {
-        const val = Number(String(row[field] || "").replace(/[^0-9.\-]/g, ""));
+        // Case-insensitive field lookup
+        let fieldKey = field;
+        if (!(fieldKey in row)) {
+          const lowerField = String(field).toLowerCase();
+          const matchedKey = Object.keys(row).find(
+            k => k.toLowerCase() === lowerField
+          );
+          if (matchedKey) {
+            fieldKey = matchedKey;
+          }
+        }
+        
+        const val = Number(String(row[fieldKey] || "").replace(/[^0-9.\-]/g, ""));
         if (!Number.isNaN(val)) {
           sum += val;
         }
@@ -297,8 +346,20 @@ async function combineMultiSourceResults(sourceResults, uniqueId, columns, valua
     const conditionFields = columns.filter(c => c !== uniqueId && !valuationFields.includes(c));
     for (const field of conditionFields) {
       for (const row of group._rows) {
-        if (row[field] != null && row[field] !== "") {
-          agg[field] = row[field];
+        // Case-insensitive field lookup
+        let fieldKey = field;
+        if (!(fieldKey in row)) {
+          const lowerField = String(field).toLowerCase();
+          const matchedKey = Object.keys(row).find(
+            k => k.toLowerCase() === lowerField
+          );
+          if (matchedKey) {
+            fieldKey = matchedKey;
+          }
+        }
+        
+        if (row[fieldKey] != null && row[fieldKey] !== "") {
+          agg[field] = row[fieldKey];
           break;
         }
       }

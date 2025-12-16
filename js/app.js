@@ -144,19 +144,36 @@
 
 
   // Spinner management functions
+  let spinnerStartTime = null;
+  const MIN_SPINNER_DISPLAY_MS = 500; // Minimum 500ms display time
+
   function showSpinner(text = "Processing...") {
     const spinner = document.getElementById('loading-spinner');
     const spinnerText = document.getElementById('spinner-text');
     if (spinner && spinnerText) {
       spinnerText.textContent = text;
       spinner.style.display = 'flex';
+      spinnerStartTime = Date.now();
     }
   }
 
   function hideSpinner() {
     const spinner = document.getElementById('loading-spinner');
     if (spinner) {
-      spinner.style.display = 'none';
+      const elapsed = spinnerStartTime ? Date.now() - spinnerStartTime : 0;
+      const remaining = Math.max(0, MIN_SPINNER_DISPLAY_MS - elapsed);
+      
+      if (remaining > 0) {
+        // Wait for minimum display time before hiding
+        setTimeout(() => {
+          spinner.style.display = 'none';
+          spinnerStartTime = null;
+        }, remaining);
+      } else {
+        // Already shown long enough, hide immediately
+        spinner.style.display = 'none';
+        spinnerStartTime = null;
+      }
     }
   }
 
@@ -176,7 +193,10 @@
         continue;
       }
 
-      const { dataType, roleGuess } = columnMeta;
+      const { dataType, roleGuess, returnType } = columnMeta;
+      
+      // Use returnType if available (from function definitions), otherwise use dataType
+      const effectiveDataType = returnType || dataType;
 
       // Rule 1: candidateId fields get no summary
       if (roleGuess === 'candidateId') {
@@ -194,8 +214,8 @@
         continue;
       }
 
-      // Rule 3: Currency columns show SUM
-      if (dataType === 'currency') {
+      // Rule 3: Currency columns show SUM (check both dataType and returnType)
+      if (effectiveDataType === 'currency' || dataType === 'currency') {
         summaries[columnName] = {
           value: window.Statistical.sum(values),
           type: 'sum',
@@ -272,7 +292,11 @@
     // If this column is produced by a function, derive metadata from the function definition
     if (queryPlan && queryPlan.functionCall) {
       const { functionCall } = queryPlan;
-      if (functionCall.functionName === columnName && functionCall.library && window.FunctionLibrary) {
+      // Normalize column name and function name for comparison (handle spaces, camelCase, etc.)
+      const normalizedColumnName = columnName.replace(/\s+/g, '').toLowerCase();
+      const normalizedFunctionName = functionCall.functionName.replace(/\s+/g, '').toLowerCase();
+      
+      if (normalizedColumnName === normalizedFunctionName && functionCall.library && window.FunctionLibrary) {
         const lib = window.FunctionLibrary[functionCall.library];
         const func = lib && lib.functions && lib.functions[functionCall.functionName];
         if (func && func.returnType) {
@@ -722,6 +746,11 @@
         }
 
         console.log('Calling DataManager.importFiles');
+        showSpinner(`Importing ${supportedFiles.length} file(s)...`);
+        
+        // Test delay to verify spinner visibility (remove in production)
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second test delay
+        
         const imported = await window.DataManager.importFiles(supportedFiles);
         console.log('Import completed:', imported);
 
@@ -1700,7 +1729,10 @@
     
     columns.forEach(k => {
       const th = document.createElement("th");
-      th.textContent = k;
+      // Capitalize each word in the column header
+      th.textContent = k.split(/\s+/).map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      ).join(' ');
       trHead.appendChild(th);
     });
     thead.appendChild(trHead);
